@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SKU14 · 공모전 팀원 모집</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- 좁은 화면에서 사이드바를 열었을 때 뒤를 덮는 막 -->
+<div class="scrim" id="scrim" hidden></div>
+
+<aside class="sidebar" id="sidebar">
+  <a class="logo" href="#/posts">
+    <span class="logo-mark">SKU<b>14</b></span>
+    <span class="logo-divider"></span>
+    <span class="logo-text">공모전</span>
+  </a>
+
+  <nav class="sidenav">
+    <a href="#/posts" data-nav="posts">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
+      </span>
+      <span class="label">공모전 목록<small>Contests</small></span>
+    </a>
+    <a href="#/mine" data-nav="mine">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.5 6 .9-4.3 4.2 1 6-5.3-2.8L6.7 19.6l1-6L3.4 9.4l6-.9z"/></svg>
+      </span>
+      <span class="label">내 학과 대상<small>For My Major</small></span>
+    </a>
+    <a href="#/admin" data-nav="admin" id="nav-admin" hidden>
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 13.5a7.6 7.6 0 000-3l2-1.5-2-3.4-2.3 1a7.6 7.6 0 00-2.6-1.5L14 2h-4l-.5 2.6a7.6 7.6 0 00-2.6 1.5l-2.3-1-2 3.4 2 1.5a7.6 7.6 0 000 3l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 002.6 1.5L10 22h4l.5-2.6a7.6 7.6 0 002.6-1.5l2.3 1 2-3.4z"/></svg>
+      </span>
+      <span class="label">관리자<small>Admin</small></span>
+    </a>
+    <a href="#/login" data-nav="login">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 100-8 4 4 0 000 8z"/><path d="M4 21a8 8 0 1116 0"/></svg>
+      </span>
+      <span class="label" id="nav-login-label">로그인 · 가입<small>Sign in</small></span>
+    </a>
+  </nav>
+
+  <div class="sidefoot">
+    <p>서경대학교 공지에서 공모전·해커톤을 모아 보여줍니다.</p>
+    <p class="dim">학생이 만든 비공식 서비스입니다.</p>
+  </div>
+</aside>
+
+<div class="shell">
+  <header class="topbar">
+    <button class="hamburger" id="hamburger" aria-label="메뉴 열기">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <h1 class="page-title" id="page-title">공모전 목록</h1>
+    <div class="topbar-right" id="who"></div>
+  </header>
+
+  <section class="hero" id="hero"></section>
+
+  <main id="view"></main>
+
+  <footer class="pagefoot">
+    <span>SKU14 · 공모전 팀원 모집</span>
+    <span class="dim">자료 출처: 서경대학교 공지사항</span>
+  </footer>
+</div>
+
+<!-- ────────────────────────────────────────────── 게시판 목록 -->
+<template id="tpl-list">
+  <div class="stack">
+    <div class="tiles" data-tiles></div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>공모전 찾기</h2>
+      </div>
+      <div class="filters">
+        <label>
+          <span>대상 학과</span>
+          <select data-f="department"><option value="">전체</option></select>
+        </label>
+        <label>
+          <span>종류</span>
+          <select data-f="kind">
+            <option value="">전체</option>
+            <option value="contest">공모전</option>
+            <option value="hackathon">해커톤</option>
+            <option value="etc">기타</option>
+          </select>
+        </label>
+        <label class="check">
+          <input type="checkbox" data-f="mine">
+          <span>내 학과가 쓸 수 있는 글만</span>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>공모전 <span data-count class="muted"></span></h2>
+      </div>
+      <div data-list class="items"></div>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 게시물 상세 -->
+<template id="tpl-detail">
+  <div class="stack">
+    <a class="back" href="#/posts">← 목록으로</a>
+
+    <article class="card post">
+      <div class="post-head">
+        <span data-kind class="tag"></span>
+        <h2 data-title></h2>
+      </div>
+
+      <dl class="meta">
+        <div><dt>주최</dt><dd data-host></dd></div>
+        <div><dt>마감</dt><dd data-deadline></dd></div>
+        <div><dt>모집 인원</dt><dd data-need></dd></div>
+        <div><dt>등록</dt><dd data-created></dd></div>
+      </dl>
+
+      <p class="body" data-body></p>
+      <p class="source" data-source></p>
+
+      <div class="depts">
+        <h3>대상 학과</h3>
+        <div data-depts class="chips"></div>
+        <p class="hint">체크된 학과의 학생만 댓글을 쓸 수 있습니다.</p>
+      </div>
+    </article>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>댓글 <span data-count class="muted"></span></h2>
+      </div>
+      <div data-comments class="comments"></div>
+      <form data-comment-form class="comment-form">
+        <textarea name="body" rows="3" maxlength="1000" placeholder="댓글을 입력하세요"></textarea>
+        <div class="row spread">
+          <p data-reason class="reason"></p>
+          <button type="submit">등록</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 로그인 / 가입 -->
+<template id="tpl-auth">
+  <div class="auth-grid">
+    <section class="card">
+      <div class="card-head"><h2>로그인</h2></div>
+      <form data-login class="stack-sm">
+        <label><span>학번</span><input name="student_no" inputmode="numeric" autocomplete="username" required></label>
+        <label><span>비밀번호</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">로그인</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>회원가입</h2></div>
+      <p class="hint top">소속 학과는 댓글 권한을 가리는 기준이라 가입할 때 꼭 정해야 합니다.</p>
+      <form data-register class="stack-sm">
+        <label><span>학번</span><input name="student_no" inputmode="numeric" required></label>
+        <label><span>이름</span><input name="name" required></label>
+        <label><span>닉네임</span><input name="nickname" required></label>
+        <label><span>비밀번호 <small>8자 이상</small></span><input name="password" type="password" autocomplete="new-password" required></label>
+        <label><span>소속 학과</span><select name="department_id" required></select></label>
+        <button type="submit">가입</button>
+      </form>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 관리자 -->
+<template id="tpl-admin">
+  <div class="stack">
+    <div class="tiles" data-summary></div>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>학교 공지 수집</h2>
+      </div>
+      <p class="hint top">
+        skuniv.ac.kr 공지에서 &lsquo;공모전&rsquo;, &lsquo;해커톤&rsquo; 검색 결과를 가져옵니다.
+        3개월 이내 공지만 담으며, 받아온 공지는 바로 게시판에 공개됩니다.
+      </p>
+      <div class="row">
+        <button data-crawl>지금 수집하기</button>
+        <span data-crawl-msg class="muted"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>수집한 공지</h2>
+        <label class="check"><input type="checkbox" data-show-all><span>처리한 공지도 보기</span></label>
+      </div>
+      <div data-notices class="items"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>직접 등록</h2></div>
+      <form data-new-post class="stack-sm">
+        <div class="form-grid">
+          <label><span>제목</span><input name="title" required></label>
+          <label><span>종류</span>
+            <select name="kind">
+              <option value="contest">공모전</option>
+              <option value="hackathon">해커톤</option>
+              <option value="etc">기타</option>
+            </select>
+          </label>
+          <label><span>주최</span><input name="host" placeholder="선택"></label>
+          <label><span>마감일</span><input name="deadline" type="date"></label>
+          <label><span>모집 인원</span><input name="need_people" type="number" min="0" max="1000" value="0"></label>
+          <label><span>원본 링크</span><input name="source_url" type="url" placeholder="선택"></label>
+        </div>
+        <label><span>내용</span><textarea name="body" rows="5" required></textarea></label>
+        <fieldset class="deptbox">
+          <legend>대상 학과 <small>체크한 학과만 댓글 가능 · 비워 두면 전체 공개</small></legend>
+          <div data-dept-checks class="dept-grid"></div>
+        </fieldset>
+        <div class="row"><button type="submit">게시</button></div>
+      </form>
+    </section>
+  </div>
+</template>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
