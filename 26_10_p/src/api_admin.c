@@ -2,6 +2,7 @@
 #include "api.h"
 #include "db.h"
 #include "crawler.h"
+#include "ai.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -137,6 +138,8 @@ static void handle_post_create(Request *req, Response *res)
         res_error(res, 500, "db_error", "저장을 확정할 수 없습니다.");
         goto out;
     }
+
+    ai_start_background(0);         /* 새 글을 AI 로 분석 (키가 없으면 아무 일도 안 한다) */
 
     {
         Buf b;
@@ -286,13 +289,16 @@ static void handle_notice_crawl(Request *req, Response *res)
         return;
 
     window = (int)db_scalar(
-        "SELECT CAST(v AS SIGNED) FROM app_config WHERE k = 'crawl.window_days'", 92);
+        "SELECT CAST(v AS SIGNED) FROM app_config WHERE k = 'crawl.window_days'", 730);
 
     if (!crawl_notices(window, &cr)) {
         res_error(res, 502, "crawl_failed",
                   cr.error[0] ? cr.error : "학교 홈페이지에서 공지를 가져오지 못했습니다.");
         return;
     }
+
+    if (cr.published > 0)
+        ai_start_background(0);     /* 새로 게시된 공지를 AI 로 분석 */
 
     buf_init(&b);
     buf_puts(&b, "{\"ok\":true,");
@@ -316,6 +322,7 @@ static void handle_notice_publish(Request *req, Response *res, unsigned notice_i
     MYSQL_ROW row;
     char title[400] = "", url[600] = "", published[16] = "", keyword[48] = "";
     char status[20] = "";
+    long ext_id = 0;
     unsigned depts[MAX_DEPTS];
     int ndepts, need_people;
     const char *kind, *deadline, *extra_body, *host;
@@ -330,7 +337,7 @@ static void handle_notice_publish(Request *req, Response *res, unsigned notice_i
 
     buf_init(&sql);
     db_sqlf(&sql,
-            "SELECT title, url, DATE_FORMAT(published_at, '%%Y-%%m-%%d'), keyword, status "
+            "SELECT title, url, DATE_FORMAT(published_at, '%%Y-%%m-%%d'), keyword, status, ext_id "
             "FROM notices WHERE id = %u", notice_id);
     qr = db_query_buf(&sql);
     buf_free(&sql);
@@ -343,6 +350,7 @@ static void handle_notice_publish(Request *req, Response *res, unsigned notice_i
             str_copy(published, sizeof published, row[2]);
             str_copy(keyword, sizeof keyword, row[3]);
             str_copy(status, sizeof status, row[4]);
+            ext_id = row[5] ? strtol(row[5], NULL, 10) : 0;
         }
         mysql_free_result(qr);
     }
@@ -366,13 +374,15 @@ static void handle_notice_publish(Request *req, Response *res, unsigned notice_i
     if (need_people < 0 || need_people > 1000)
         need_people = 0;
 
-    /* 본문은 관리자가 적어 보낸 글이 있으면 그걸 쓰고, 없으면 공지 정보로 채운다. */
+    /* 본문은 관리자가 적어 보낸 글 뒤에 공지 원문을 텍스트로 붙인다.
+     * 원문 링크는 source_url 에 따로 두고, 원문을 못 받으면 출처만 적는다. */
     buf_init(&body);
     if (extra_body && extra_body[0]) {
         buf_puts(&body, extra_body);
         buf_puts(&body, "\n\n");
     }
-    buf_printf(&body, "학교 공지 (%s, %s 게시)\n%s", keyword, published, url);
+    if (!notice_body_text(ext_id, &body))
+        buf_printf(&body, "학교 공지 (%s, %s 게시)", keyword, published);
 
     if (!db_begin()) {
         buf_free(&body);
@@ -418,6 +428,8 @@ static void handle_notice_publish(Request *req, Response *res, unsigned notice_i
         res_error(res, 500, "db_error", "저장을 확정할 수 없습니다.");
         goto out;
     }
+
+    ai_start_background(0);
 
     {
         Buf b;

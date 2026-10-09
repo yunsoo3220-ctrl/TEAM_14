@@ -4,6 +4,7 @@
  * 소속된 사용자만 댓글을 쓸 수 있다. 관리자는 항상 쓸 수 있다. */
 #include "api.h"
 #include "db.h"
+#include "ml.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,8 +91,10 @@ static void handle_post_list(Request *req, Response *res)
 
     buf_init(&sql);
     buf_puts(&sql,
-             "SELECT p.id, p.kind, p.title, IFNULL(p.host, ''), "
-             "       IFNULL(DATE_FORMAT(p.deadline, '%Y-%m-%d'), ''), p.need_people, "
+             /* 주최·마감일이 비어 있으면 AI 가 본문에서 찾은 값으로 채운다. */
+             "SELECT p.id, p.kind, p.title, IFNULL(p.host, IFNULL(a.host, '')), "
+             "       IFNULL(DATE_FORMAT(IFNULL(p.deadline, a.deadline), '%Y-%m-%d'), ''), "
+             "       p.need_people, "
              "       p.view_count, DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i'), "
              "       IFNULL(p.source_url, ''), "
              /* 작성자가 없는 글은 학교 공지에서 자동으로 올라온 글이다. */
@@ -99,8 +102,12 @@ static void handle_post_list(Request *req, Response *res)
              "       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id), "
              "       (SELECT GROUP_CONCAT(d.name ORDER BY d.sort SEPARATOR ', ') "
              "          FROM post_departments pd JOIN departments d ON d.id = pd.department_id "
-             "         WHERE pd.post_id = p.id) "
+             "         WHERE pd.post_id = p.id), "
+             "       a.summary, a.tags, (p.deadline IS NULL AND a.deadline IS NOT NULL), "
+             /* AI 요약이 없을 때 목록에 보여줄 본문 앞부분 (LEFT 는 글자 단위) */
+             "       LEFT(REPLACE(REPLACE(p.body, '\\r', ''), '\\n', ' '), 160) "
              "FROM posts p LEFT JOIN users u ON u.id = p.author_id "
+             "LEFT JOIN post_ai a ON a.post_id = p.id "
              "WHERE 1 = 1");
 
     /* 특정 학과 대상 게시물만 */
@@ -151,6 +158,12 @@ static void handle_post_list(Request *req, Response *res)
         json_kv_str(&b, "author_nickname", row[9]);                   buf_putc(&b, ',');
         json_kv_int(&b, "comment_count", atoll(row[10]));             buf_putc(&b, ',');
         json_kv_str(&b, "departments", row[11] ? row[11] : "");       buf_putc(&b, ',');
+        json_kv_str(&b, "summary", row[12]);                          buf_putc(&b, ',');
+        /* tags 는 ai.c 가 json_write_str 로 만든 배열이라 그대로 싣는다. */
+        buf_puts(&b, "\"tags\":");
+        buf_puts(&b, row[13] && row[13][0] == '[' ? row[13] : "[]");  buf_putc(&b, ',');
+        json_kv_bool(&b, "deadline_by_ai", row[14] && row[14][0] == '1'); buf_putc(&b, ',');
+        json_kv_str(&b, "excerpt", row[15]);                          buf_putc(&b, ',');
         /* 목록에서도 내가 댓글을 쓸 수 있는 글인지 바로 보여준다. */
         json_kv_bool(&b, "can_comment", can_comment(&u, pid, &why));
         buf_putc(&b, '}');
@@ -190,6 +203,148 @@ static void write_post_departments(Buf *b, unsigned post_id)
             json_kv_int(b, "id", atoll(row[0]));  buf_putc(b, ',');
             json_kv_str(b, "name", row[1]);       buf_putc(b, ',');
             json_kv_str(b, "college_name", row[2]);
+            buf_putc(b, '}');
+        }
+        mysql_free_result(qr);
+    }
+    buf_putc(b, ']');
+}
+
+/* AI 분석 결과. 아직 분석하지 않은 글이면 null. */
+static void write_post_ai(Buf *b, unsigned post_id)
+{
+    Buf sql;
+    MYSQL_RES *qr;
+    MYSQL_ROW row;
+    int first = 1;
+
+    buf_init(&sql);
+    db_sqlf(&sql,
+            "SELECT summary, tags, IFNULL(host, ''), "
+            "       IFNULL(DATE_FORMAT(deadline, '%%Y-%%m-%%d'), ''), model, "
+            "       DATE_FORMAT(analyzed_at, '%%Y-%%m-%%d %%H:%%i') "
+            "FROM post_ai WHERE post_id = %u", post_id);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+
+    row = qr ? mysql_fetch_row(qr) : NULL;
+    if (!row) {
+        if (qr)
+            mysql_free_result(qr);
+        buf_puts(b, "null");
+        return;
+    }
+
+    buf_putc(b, '{');
+    json_kv_str(b, "summary", row[0]);                               buf_putc(b, ',');
+    buf_puts(b, "\"tags\":");
+    buf_puts(b, row[1] && row[1][0] == '[' ? row[1] : "[]");         buf_putc(b, ',');
+    json_kv_str(b, "host", row[2][0] ? row[2] : NULL);               buf_putc(b, ',');
+    json_kv_str(b, "deadline", row[3][0] ? row[3] : NULL);           buf_putc(b, ',');
+    json_kv_str(b, "model", row[4]);                                 buf_putc(b, ',');
+    json_kv_str(b, "analyzed_at", row[5]);                           buf_putc(b, ',');
+    mysql_free_result(qr);
+
+    buf_init(&sql);
+    db_sqlf(&sql,
+            "SELECT d.id, d.name, c.name, ad.score, ad.reason "
+            "FROM post_ai_departments ad "
+            "JOIN departments d ON d.id = ad.department_id "
+            "JOIN colleges c ON c.id = d.college_id "
+            "WHERE ad.post_id = %u ORDER BY ad.score DESC, c.sort, d.sort", post_id);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+
+    buf_puts(b, "\"departments\":[");
+    if (qr) {
+        while ((row = mysql_fetch_row(qr)) != NULL) {
+            if (!first)
+                buf_putc(b, ',');
+            first = 0;
+            buf_putc(b, '{');
+            json_kv_int(b, "id", atoll(row[0]));         buf_putc(b, ',');
+            json_kv_str(b, "name", row[1]);              buf_putc(b, ',');
+            json_kv_str(b, "college_name", row[2]);      buf_putc(b, ',');
+            json_kv_int(b, "score", atoll(row[3]));      buf_putc(b, ',');
+            json_kv_str(b, "reason", row[4]);
+            buf_putc(b, '}');
+        }
+        mysql_free_result(qr);
+    }
+    buf_puts(b, "]}");
+}
+
+/* 자체 모델이 고른 관련 학과 (점수 순 최대 5개) */
+static void write_post_related(Buf *b, unsigned post_id)
+{
+    MlHit hits[5];
+    int n = ml_rank_departments(post_id, 25, hits, 5, NULL);
+    int i, first = 1;
+
+    buf_putc(b, '[');
+    for (i = 0; i < n; i++) {
+        Buf sql;
+        MYSQL_RES *qr;
+        MYSQL_ROW row;
+
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT d.name, c.name FROM departments d "
+                      "JOIN colleges c ON c.id = d.college_id WHERE d.id = %u", hits[i].id);
+        qr = db_query_buf(&sql);
+        buf_free(&sql);
+        row = qr ? mysql_fetch_row(qr) : NULL;
+        if (row) {
+            if (!first)
+                buf_putc(b, ',');
+            first = 0;
+            buf_putc(b, '{');
+            json_kv_int(b, "id", hits[i].id);           buf_putc(b, ',');
+            json_kv_str(b, "name", row[0]);             buf_putc(b, ',');
+            json_kv_str(b, "college_name", row[1]);     buf_putc(b, ',');
+            json_kv_int(b, "score", hits[i].score);     buf_putc(b, ',');
+            buf_printf(b, "\"prob\":%.4f,", hits[i].prob);
+            ml_write_terms(b, &hits[i]);
+            buf_putc(b, '}');
+        }
+        if (qr)
+            mysql_free_result(qr);
+    }
+    buf_putc(b, ']');
+}
+
+/* 이 공모전으로 팀원을 모집하는 글 (모집 중인 것 먼저) */
+static void write_post_recruits(Buf *b, unsigned post_id)
+{
+    Buf sql;
+    MYSQL_RES *qr;
+    MYSQL_ROW row;
+    int first = 1;
+
+    buf_init(&sql);
+    db_sqlf(&sql,
+            "SELECT r.id, r.title, r.status, r.need_people, u.nickname, IFNULL(d.name, ''), "
+            "       (SELECT COUNT(*) FROM recruit_comments c WHERE c.recruit_id = r.id) "
+            "FROM recruits r JOIN users u ON u.id = r.author_id "
+            "LEFT JOIN departments d ON d.id = u.department_id "
+            "WHERE r.post_id = %u ORDER BY r.status = 'closed', r.created_at DESC LIMIT 10",
+            post_id);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+
+    buf_putc(b, '[');
+    if (qr) {
+        while ((row = mysql_fetch_row(qr)) != NULL) {
+            if (!first)
+                buf_putc(b, ',');
+            first = 0;
+            buf_putc(b, '{');
+            json_kv_int(b, "id", atoll(row[0]));                        buf_putc(b, ',');
+            json_kv_str(b, "title", row[1]);                            buf_putc(b, ',');
+            json_kv_str(b, "status", row[2]);                           buf_putc(b, ',');
+            json_kv_int(b, "need_people", atoll(row[3]));               buf_putc(b, ',');
+            json_kv_str(b, "author_nickname", row[4]);                  buf_putc(b, ',');
+            json_kv_str(b, "author_department", row[5][0] ? row[5] : NULL); buf_putc(b, ',');
+            json_kv_int(b, "comment_count", atoll(row[6]));
             buf_putc(b, '}');
         }
         mysql_free_result(qr);
@@ -292,6 +447,12 @@ static void handle_post_detail(Request *req, Response *res, unsigned post_id)
     json_kv_str(&b, "author_nickname", row[10]);                     buf_putc(&b, ',');
     buf_puts(&b, "\"departments\":");
     write_post_departments(&b, post_id);
+    buf_puts(&b, ",\"ai\":");
+    write_post_ai(&b, post_id);
+    buf_puts(&b, ",\"related_departments\":");
+    write_post_related(&b, post_id);
+    buf_puts(&b, ",\"recruits\":");
+    write_post_recruits(&b, post_id);
     buf_puts(&b, "},\"comments\":");
     write_comments(&b, post_id);
     buf_puts(&b, ",\"permission\":{");

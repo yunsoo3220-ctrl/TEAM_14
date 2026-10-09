@@ -13,7 +13,7 @@ MYSQL_INC ?= C:/msys64/ucrt64/include/mysql
 MYSQL_CLI ?= C:/Program Files/MySQL/MySQL Server 8.4/bin/mysql.exe
 
 CFLAGS   := -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -I$(MYSQL_INC)
-LDFLAGS  := -lmysqlclient -lws2_32 -lwinhttp
+LDFLAGS  := -lmysqlclient -lcurl -lws2_32 -lwinhttp
 
 SRCDIR   := src
 OBJDIR   := build
@@ -52,6 +52,8 @@ PW_ARG     := $(if $(MYSQL_PW),-p$(MYSQL_PW),-p)
 db: check-mysql
 	"$(MYSQL_CLI)" -u $(MYSQL_USER) $(PW_ARG) --default-character-set=utf8mb4 < sql/01_schema.sql
 	"$(MYSQL_CLI)" -u $(MYSQL_USER) $(PW_ARG) --default-character-set=utf8mb4 < sql/02_seed_departments.sql
+	"$(MYSQL_CLI)" -u $(MYSQL_USER) $(PW_ARG) --default-character-set=utf8mb4 < sql/05_dept_profiles.sql
+	"$(MYSQL_CLI)" -u $(MYSQL_USER) $(PW_ARG) --default-character-set=utf8mb4 < sql/07_interest_tags.sql
 	@echo "DB 준비 완료"
 
 # 접속만 먼저 시험해 비밀번호 문제를 스키마 적용 전에 알려준다.
