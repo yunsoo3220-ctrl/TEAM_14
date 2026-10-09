@@ -17,6 +17,7 @@
 | --- | --- |
 | MinGW-w64 gcc | MSYS2 → `pacman -S mingw-w64-ucrt-x86_64-gcc` |
 | MySQL 클라이언트 라이브러리 | MSYS2 → `pacman -S mingw-w64-ucrt-x86_64-libmariadbclient` |
+| libcurl (가입 인증 메일) | MSYS2 → `pacman -S mingw-w64-ucrt-x86_64-curl` |
 | make | MSYS2 → `pacman -S make` |
 | MySQL 서버 8.x | 실행 중이어야 한다 |
 
@@ -86,6 +87,22 @@ mysql -u root -p --default-character-set=utf8mb4 < sql/02_seed_departments.sql
 - `02_seed_departments.sql` — 대학 8개와 학과 27개를 넣는다.
 - `03_display_name.sql` — 이미 쓰고 있던 DB 를 새 가입 방식(전화번호 + 표시 이름)에
   맞추는 변경분. `01` 을 처음부터 다시 돌렸다면 필요 없다.
+- `04_ai.sql` — AI 분석 결과 표(`post_ai`, `post_ai_departments`)를 기존 DB 에 더하는
+  변경분. `01` 을 처음부터 다시 돌렸다면 필요 없다.
+- `05_dept_profiles.sql` — 자체 추천 모델의 학과 프로필. `make db` 가 함께 넣는다.
+- `06_community.sql` — 자기소개·관심 키워드·팀원 모집 게시판 표를 기존 DB 에 더하는
+  변경분 (한 번만). `01` 을 처음부터 돌렸다면 필요 없다.
+- `07_interest_tags.sql` — 가입할 때 고르는 관심 키워드 41개. `make db` 가 함께 넣는다.
+
+### 시연용 가상 회원
+
+```powershell
+python scripts\seed_demo.py --count 40      # 서버가 떠 있어야 한다
+```
+
+학번 `2099000001`~ (존재할 수 없는 입학 연도), 비밀번호 `demo1234!` 인 가상 회원을 만든다.
+학과마다 어울리는 관심 키워드·자기소개를 주고, 실제 공모전에 이어진 모집글 14건과 댓글도 만든다.
+다시 돌려도 중복으로 만들지 않는다. 지우려면 `scripts\cleanup_demo.sql` 을 실행한다.
 
 ## 4. 관리자 계정 만들기
 
@@ -162,6 +179,108 @@ $env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe
 | `--webroot DIR` | www | 정적 파일 디렉터리 |
 | `--add-admin 학번 이름 비밀번호` | | 관리자 계정을 만들고 종료 |
 | `--crawl` | | 공지를 한 번 수집하고 종료 (작업 스케줄러용) |
+| `--ai-analyze [--force]` | | 아직 분석하지 않은 게시물을 AI 로 분석하고 종료 (`--force` 는 전체) |
+
+### 학과별 추천 (자체 모델, 무료)
+
+외부 API 없이 서버 안에서 학습·추론하는 추천 모델이다 (`src/ml.c`). 메뉴의
+**학과별 추천** (`#/reco/{학과번호}`) 에서 학과를 고르면 관련 공모전을 관련도 구간
+(매우 관련 70+ / 관련 50+ / 참고 25+) 으로 묶어 보여 준다. 로그인한 학생은 목록 위에서
+내 학과 상위 3건을 바로 보고, 게시물 상세에는 관련 학과 상위 5개가 나온다.
+
+1. **토큰화** — 낱말 + 한글 두 글자 묶음(형태소 분석기 불필요), 공지 상투어는 불용어로 뺀다.
+2. **TF-IDF** — 게시물(제목 2배 + 본문)과 학과 프로필(`dept_profiles`)을 벡터로 만든다.
+3. **학습 (Rocchio)** — 학과 벡터 = 프로필 + 그 학과에 연결된 게시물 특징.
+   연결은 관리자가 대상 학과로 체크한 글(1.0), 그 학과 학생이 댓글을 단 글(0.5).
+   잡음을 막으려고 상위 40개 특징만 쓰고, 데이터가 적을수록 반영을 줄인다.
+4. **관련도** — 코사인 유사도를 0~100 으로 보정하고, 겹친 낱말을 근거로 보여 준다.
+
+게시물·댓글·체크·프로필이 바뀌면 다음 요청 때 자동으로 다시 학습한다 (게시물 26건 기준 수십 ms).
+학과 프로필은 `sql/05_dept_profiles.sql` 에서 고치면 된다.
+
+- **동의어** — 유튜브·숏폼→영상, 코딩·앱개발→개발, 인공지능→AI 처럼 같은 뜻의 낱말을 함께 센다.
+- **개인 맞춤** — 로그인한 학생이 내 학과를 보면 학과 벡터에 내 관심 키워드·자기소개 벡터를 더해 매긴다.
+- **마감** — 마감일을 아는 공모전 가운데 지난 것은 뒤로 보내고 `closed` 로 표시한다.
+- **적합 확률** — 유사도 s 를 `P = 1 / (1 + e^-(a s + b))` 로 바꾼다 (Platt scaling). 정답 쌍(체크·댓글·♥)을
+  양성, 그 글의 나머지 학과를 음성으로 로지스틱 회귀를 푸는데, 정답이 적어도 흔들리지 않게 데이터 분포에서
+  정한 사전값(모든 쌍의 중앙값 5%, 상위 10% 지점 70%) 쪽으로 당긴다 (MAP). 정답이 쌓일수록 데이터를 따른다.
+- **새 글 실시간 예측** — 관리자 화면 "직접 등록" 에서 제목·내용을 쓰는 동안 `POST /api/ml/predict` 가
+  재학습 없이 지금 모델로 학과별 적합 확률을 매긴다 (한 번에 약 50~100ms). 학과를 누르거나
+  "30% 이상 학과 체크" 로 대상 학과를 고를 수 있고, 게시하면 그 글까지 넣어 다시 학습한다.
+
+### 딥러닝 임베딩 (선택, 무료)
+
+사전학습된 다국어 트랜스포머(`intfloat/multilingual-e5-small`, 384차원)로 글의 **뜻**을 벡터로
+만들어 위 모델에 더한다. "AI 숏폼"과 "미디어영상학과"처럼 글자가 겹치지 않아도 연결된다.
+
+```
+ml/embed_server.py  (Python, 127.0.0.1:8001)  ← WinHTTP ←  src/embed.c  ←  src/ml.c
+```
+
+- 게시물은 `passage`, 학과 프로필·관심사는 `query` 로 임베딩한다. 결과는 `ml/cache/` 의 SQLite 에
+  캐시하므로, 다시 학습할 때는 새 글만 계산한다.
+- 임베딩 벡터에도 같은 Rocchio 를 적용한다 (학과 = 프로필 + β × 연결된 게시물 평균).
+- **최종 유사도 = 0.7 × 임베딩 + 0.3 × TF-IDF**. 트랜스포머 코사인은 관계없는 글끼리도 0.8 근처라서
+  전체 평균(mu) 아래는 0, 위는 0~1 로 편 뒤 섞는다. 근거 키워드는 TF-IDF 쪽에서 뽑는다.
+- 개인 맞춤 추천, 팀원 찾기, 모집글 "나와 맞는 순" 도 같은 방식으로 섞는다.
+- 서비스가 꺼져 있으면 자동으로 TF-IDF 만 쓰고, 나중에 서비스가 뜨면 다음 요청 때 다시 학습한다.
+  `/api/ml/info` 의 `embedding_model`, `embedding_dim` 으로 지금 상태를 볼 수 있다.
+
+설치 (한 번, 약 1GB):
+
+```powershell
+python -m venv ml\.venv
+ml\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+ml\.venv\Scripts\python.exe -m pip install sentence-transformers pymysql
+```
+
+`scripts\start-server.ps1` 은 `ml\.venv` 가 있으면 임베딩 서비스를 함께 띄운다 (`-NoEmbed` 로 끈다).
+처음 실행할 때 모델(약 470MB)을 내려받는다. 따로 띄우려면 `ml\.venv\Scripts\python.exe ml\embed_server.py`.
+
+**미세조정** — 관리자 체크와 댓글로 쌓인 정답 쌍으로 모델을 대조학습한다. 게시물의 20%를 떼어 두고
+Recall@5·MRR 을 사전학습 모델과 비교해, 나아졌을 때만 `ml/models/finetuned` 에 저장한다.
+정답 쌍이 수백 개는 쌓인 뒤에 돌리는 것을 권한다.
+
+```powershell
+$env:SKU_DB_PASS="<root 비밀번호>"
+ml\.venv\Scripts\python.exe ml\finetune.py --eval-only   # 지금 성능만
+ml\.venv\Scripts\python.exe ml\finetune.py               # 미세조정 → 임베딩 서비스 재시작 시 적용
+```
+
+### 관심 키워드 · 팀원 모집 · 팀원 찾기
+
+- **가입** — 관심 분야 / 맡고 싶은 역할 / 협업 성향 키워드를 1~8개 고르고, 자기소개를 자유롭게 적는다.
+  나중에 **내 프로필** (`#/me`) 에서 바꿀 수 있다.
+- **팀원 모집** (`#/recruits`) — 학생이 직접 모집글을 쓴다. 함께 나갈 공모전, 찾는 분야·역할 키워드,
+  인원, 마감일을 넣고 댓글로 참여 의사를 받는다. 작성자는 마감·삭제할 수 있다.
+  공모전 상세에도 그 공모전으로 올라온 모집글이 보인다. "나와 맞는 순" 정렬은 아래 모델을 쓴다.
+- **팀원 찾기** (`#/people`) — 같은 자체 모델로 회원끼리 비교한다. 회원 문서 = 고른 키워드(가중 3) +
+  자기소개 + 학과 이름, 모집글 문서 = 찾는 키워드 + 제목 + 본문. TF-IDF 라 많은 사람이 고른
+  키워드보다 드문 키워드가 겹칠수록 점수가 높다. 공통 키워드를 근거로 보여 준다.
+- **마음에 들어요** — 모집글 카드와 상세에 ♥ 버튼이 있다 (로그인, 내 글 제외, 다시 누르면 취소).
+  기존 DB 에는 `sql/08_recruit_likes.sql` 을 한 번 적용한다. 누른 기록은 추천 모델에 이렇게 들어간다.
+  - 관련 공모전: 공모전에 연결된 모집글을 좋아하면 (그 공모전, 내 학과) 를 학습 데이터로 쓴다 (댓글과 같은 0.5).
+  - 개인 맞춤: 최근 좋아한 모집글 10개의 제목·키워드·공모전 제목을 내 관심사에 더한다.
+  - 팀원 찾기·나와 맞는 순: 좋아한 모집글 내용을 회원 문서에 0.5 배로 넣고, 같은 글을 좋아한 회원
+    (Jaccard × 0.15) 과 내 글을 좋아했거나 내가 글을 좋아한 회원 (+0.10) 에게 가산점을 준다.
+    근거에 "내 모집글에 ♥", "같은 모집글에 ♥" 처럼 보여 준다.
+- 다른 회원에게 보이는 것은 표시 이름·학과·키워드·자기소개뿐이다. 실명·전화번호·학번은 나가지 않는다.
+
+### AI 분석·추천 켜기 (Claude, 유료·선택)
+
+환경변수 `ANTHROPIC_API_KEY` 를 주고 서버를 띄우면 켜진다. 없으면 AI 메뉴와 추천 영역이
+화면에서 숨겨지고 나머지 기능은 그대로 동작한다.
+
+```powershell
+$env:ANTHROPIC_API_KEY="sk-ant-..."; $env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe --port 8080
+```
+
+- 게시물마다 한 번 `claude-opus-5-5` 로 분석해 요약·태그·주최·마감일과 학과별 관련도(0~100)를
+  저장한다 (`src/ai.c`). 새로 수집·등록한 글은 백그라운드에서 자동으로 분석한다.
+- 학생 화면의 추천은 저장된 점수(50점 이상)로만 계산하므로, 화면을 볼 때마다 API 를 부르지 않는다.
+- 관리자 화면의 "AI 게시물 분석" 에서 진행 상황을 보고 다시 분석할 수 있다.
+- 안전 분류기가 거절하면 Anthropic 이 권하는 모델로 다시 시도하도록
+  `fallbacks: "default"` (`anthropic-beta: server-side-fallback-2026-07-01`) 를 켜 두었다.
 
 ---
 
@@ -171,8 +290,39 @@ $env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe
 
 ### 가입과 표시 이름
 
-가입할 때 받는 것은 **학번, 이름, 전화번호, 비밀번호, 소속 학과** 다.
+로그인 화면(`#/login`)은 아이디(학번)·비밀번호만 먼저 보여 주고, 그 아래 작은 **회원가입** 링크로
+가입 화면(`#/register`)을 연다.
+
+가입할 때 꼭 받는 것은 **학교 이메일(@skuniv.ac.kr) + 인증 코드, 학번, 이름, 전화번호, 비밀번호,
+소속 학과** 다. 관심 키워드와 자기소개는 **선택**이다 (적어 두면 추천이 더 잘 맞는다).
 닉네임은 받지 않는다. 게시판에 쓰이는 표시 이름은 서버가 만든다.
+
+#### 학교 이메일 인증
+
+1. `POST /api/register/send-code {email}` — `@skuniv.ac.kr` 로 끝나는 주소만 받는다 (소문자로 맞춤).
+   이미 가입한 주소는 거절하고, 같은 주소로는 60초에 한 번만 보낸다. 6자리 코드를 OS 난수원으로 만들어
+   메일로 보내고, DB(`email_verifications`)에는 **소금 친 해시만** 남긴다. 코드는 10분 동안 유효하다.
+2. `POST /api/register {..., email, code}` — 다른 항목을 모두 확인한 뒤 마지막에 코드를 본다.
+   5번 틀리면 코드를 다시 받아야 한다. 가입에 성공하면 코드를 지운다 (한 번만 쓸 수 있다).
+
+메일은 libcurl 로 SMTP 서버를 통해 보낸다 (`src/mailer.c`, TLS 필수). 설정은 프로젝트 폴더의 `smtp.env`
+한 곳에 적는다 (`smtp.env.example` 을 복사해 채운다 · 비밀번호가 들어가므로 `.gitignore` 에 있다).
+
+```
+SKU_SMTP_URL=smtps://smtp.gmail.com:465        # 네이버 smtps://smtp.naver.com:465
+SKU_SMTP_USER=보내는계정@gmail.com
+SKU_SMTP_PASS=앱비밀번호16자리                   # Gmail 은 2단계 인증 후 '앱 비밀번호' (로그인 비밀번호 아님)
+SKU_SMTP_FROM=보내는계정@gmail.com
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\send-test-mail.ps1 -To 학번@skuniv.ac.kr   # 설정 시험
+powershell -ExecutionPolicy Bypass -File scripts\start-server.ps1 -Port 8080 -NoAdmin       # smtp.env 를 읽어 띄움
+```
+
+메일 서버가 설정되지 않으면 인증 코드 요청은 `503 mail_not_configured` 로 거절된다 (가입 불가).
+시험할 때만 `SKU_MAIL_DEV=1` 을 주면 메일 대신 서버 로그(`logs\server.err.log`)에 코드를 남기는 개발 모드가 된다.
+API 응답에는 어떤 경우에도 코드가 실리지 않는다. 기존 DB 에는 `sql/10_email_verify.sql` 을 적용한다.
 
 ```
 손동권 + 010-9948-9687  ->  손*권_9948
@@ -226,15 +376,24 @@ $env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe
 
 ```
 GET https://www.skuniv.ac.kr/wp-json/wp/v2/notice
-    ?search=공모전        (그리고 해커톤)
-    &after=<오늘-92일>T00:00:00
-    &per_page=50
+    ?search=공모전        (해커톤 · 경진대회 · 공모 · 대회 · 챌린지 · 아이디어 · 콘테스트)
+    &after=<오늘-730일>T00:00:00
+    &per_page=100&page=1,2,…
     &_fields=id,date,link,title
 ```
 
 학교 홈페이지가 WordPress 로 되어 있어 공지사항이 REST API 로 열려 있다.
 HTML 을 긁는 대신 이 API 를 쓰면 제목·날짜·링크를 그대로 받을 수 있다.
-`after` 파라미터로 **3개월 이내 공지만** 가져온다 (`app_config.crawl.window_days`, 기본 92일).
+`after` 파라미터로 **2년 이내 공지**를 페이지를 넘겨 가며 모두 가져온다
+(`app_config.crawl.window_days`, 기본 730일 · 기존 DB 는 `sql/09_crawl_more.sql`).
+학교 검색은 본문까지 뒤지므로 제목으로 한 번 더 거른다: 공모전·대회·챌린지 등이 들어 있고
+수상자 발표·장학금·서포터즈·동아리·교직원 대상이 아닌 글만 남긴다 (`crawler.c` 의 `is_contest_title()`).
+게시물의 등록 시각은 학교 공지 게시일로 둔다. 2026-10 기준 약 140건이 모여 추천 모델 학습에 쓰인다.
+
+게시물 본문은 공지마다 `GET /wp-json/wp/v2/notice/{id}?_fields=content` 로 원문을 받아
+텍스트로 옮긴다 (`crawler.c` 의 `notice_body_text()`). 문단은 줄로, 목록은 `•`, 표는 `|` 로
+잇고 이미지와 링크 주소는 뺀다. 원문 링크는 `posts.source_url` 에 따로 남는다.
+원문을 받지 못하면 본문에는 출처(`학교 공지 (공모전, 날짜 게시)`)만 적는다.
 
 받은 공지는 `notices` 표에 `status='pending'` 으로 쌓인다. 관리자가 목록에서
 대상 학과를 체크하고 "게시물로 등록" 을 누르면 `posts` + `post_departments` 가 만들어지고
@@ -264,6 +423,23 @@ HTML 을 긁는 대신 이 API 를 쓰면 제목·날짜·링크를 그대로 �
 | POST | `/api/notices/{id}/publish` | 관리자 | 공지를 게시물로 등록 |
 | POST | `/api/notices/{id}/ignore` | 관리자 | 공지 숨기기 |
 | GET | `/api/admin/summary` | 관리자 | 통계 요약 |
+| GET | `/api/related` | 누구나 | 학과 관련 게시물 (자체 모델). `?department_id=&limit=` |
+| GET | `/api/ml/info` | 누구나 | 자체 모델 상태 |
+| POST | `/api/ml/retrain` | 관리자 | 자체 모델 강제 재학습 |
+| POST | `/api/ml/predict` | 관리자 | `{title, body}` → 학과별 적합 확률 (재학습 없이 실시간) |
+| GET | `/api/recommendations` | 로그인 | 내 학과와 관련도가 높은 게시물 (Claude). `?limit=` |
+| GET | `/api/tags` | 누구나 | 고를 수 있는 관심 키워드 |
+| GET / PUT | `/api/profile` | 로그인 | 내 관심 키워드·자기소개 |
+| GET | `/api/members/matches` | 로그인 | 나와 성향이 비슷한 회원 (자체 모델) |
+| GET / POST | `/api/recruits` | 누구나 / 로그인 | 모집글 목록 `?status=&tag=&post_id=&sort=new\|match` / 쓰기 |
+| GET / DELETE | `/api/recruits/{id}` | 누구나 / 작성자 | 모집글 상세 / 삭제 |
+| PUT | `/api/recruits/{id}/status` | 작성자 | 모집 마감·재개 |
+| POST | `/api/recruits/{id}/comments` | 로그인 | 모집글 댓글 |
+| DELETE | `/api/recruit-comments/{id}` | 본인·관리자 | 모집글 댓글 삭제 |
+| POST | `/api/recruits/{id}/like` | 로그인 | 마음에 들어요 (내 글 제외) → `{liked, like_count}` |
+| DELETE | `/api/recruits/{id}/like` | 로그인 | 마음에 들어요 취소 |
+| GET | `/api/ai/status` | 관리자 | AI 분석 진행 상황 |
+| POST | `/api/ai/analyze` | 관리자 | AI 분석 시작. `{"force": true}` 면 전체 다시 분석 |
 
 ## 10. 파일 구조
 
@@ -275,7 +451,13 @@ src/
   api_posts.c    게시물 목록/상세, 댓글, 댓글 권한 판정
   api_admin.c    게시물 등록/삭제, 공지 수집·게시
   db.c/.h        MySQL 연결, SQL 조립(%Q 이스케이프), 트랜잭션
-  crawler.c/.h   WinHTTP 로 학교 공지 수집, HTML 엔티티 디코딩
+  crawler.c/.h   WinHTTP 로 학교 공지 수집, 공지 본문 HTML -> 텍스트
+  ai.c/.h        Claude API 로 게시물 분석 (백그라운드 작업)
+  api_ai.c       AI 추천·분석 관리 API
+  ml.c/.h        자체 추천 모델 (딥러닝 임베딩 + TF-IDF + Rocchio, 외부 API 없음)
+  embed.c/.h     임베딩 서비스 클라이언트 (WinHTTP → 127.0.0.1:8001)
+  api_ml.c       학과별 추천 API
+  api_community.c 관심 키워드·프로필·팀원 찾기·팀원 모집 게시판 API
   json.c/.h      JSON 파서와 빌더
   sha256.c/.h    SHA-256, 솔트 반복 해싱 비밀번호
   str.c          가변 문자열 버퍼, 로그

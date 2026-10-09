@@ -1,0 +1,5 @@
+# CPU 용 PyTorch 를 먼저 설치한다:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+sentence-transformers
+pymysql

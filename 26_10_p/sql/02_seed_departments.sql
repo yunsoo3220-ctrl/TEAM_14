@@ -60,6 +60,6 @@ INSERT INTO departments (college_id, name, sort) VALUES
   (8, '자유전공학부',         10);
 
 INSERT INTO app_config (k, v) VALUES
-  ('crawl.window_days', '92'),          -- 공지 수집 범위: 약 3개월
+  ('crawl.window_days', '730'),         -- 공지 수집 범위: 약 2년 (추천 모델 학습 데이터)
   ('crawl.fetched_at',  '')
 ON DUPLICATE KEY UPDATE v = VALUES(v);

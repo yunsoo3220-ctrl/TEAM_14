@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SKU14 · 공모전 팀원 모집</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -30,6 +32,36 @@
         <svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.5 6 .9-4.3 4.2 1 6-5.3-2.8L6.7 19.6l1-6L3.4 9.4l6-.9z"/></svg>
       </span>
       <span class="label">내 학과 대상<small>For My Major</small></span>
+    </a>
+    <a href="#/reco" data-nav="reco">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+      </span>
+      <span class="label">학과별 추천<small>Picked by Major</small></span>
+    </a>
+    <a href="#/recruits" data-nav="recruits">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M16 20v-1.5a3.5 3.5 0 00-3.5-3.5h-5A3.5 3.5 0 004 18.5V20"/><path d="M10 11a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19 8v6M22 11h-6"/></svg>
+      </span>
+      <span class="label">팀원 모집<small>Recruit</small></span>
+    </a>
+    <a href="#/people" data-nav="people">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M9 11a3 3 0 100-6 3 3 0 000 6zM17 11a3 3 0 100-6 3 3 0 000 6z"/><path d="M3 20a6 6 0 0112 0M13.5 14.6A6 6 0 0121 20"/></svg>
+      </span>
+      <span class="label">팀원 찾기<small>Matches</small></span>
+    </a>
+    <a href="#/ai" data-nav="ai">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 9.5h5v5h-5zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
+      </span>
+      <span class="label">AI 구조<small>How AI Works</small></span>
+    </a>
+    <a href="#/me" data-nav="me" id="nav-me" hidden>
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
+      </span>
+      <span class="label">내 프로필<small>Profile</small></span>
     </a>
     <a href="#/admin" data-nav="admin" id="nav-admin" hidden>
       <span class="ico" aria-hidden="true">
@@ -75,6 +107,8 @@
   <div class="stack">
     <div class="tiles" data-tiles></div>
 
+    <section class="reco" data-reco hidden></section>
+
     <section class="card">
       <div class="card-head">
         <h2>공모전 찾기</h2>
@@ -104,8 +138,43 @@
       <div class="card-head">
         <h2>공모전 <span data-count class="muted"></span></h2>
       </div>
-      <div data-list class="items"></div>
+      <div data-list class="items cards"></div>
     </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── AI 추천 -->
+<template id="tpl-reco">
+  <div class="stack">
+    <section class="reco reco-page">
+      <div class="reco-head">
+        <span class="ai-badge">AI</span>
+        <div>
+          <h2 data-reco-title>학과별 추천</h2>
+          <p class="muted" data-reco-sub>학과를 고르면 자체 모델이 게시물 내용을 분석해 관련 있는 공모전을 정리합니다.</p>
+        </div>
+      </div>
+      <div class="reco-controls">
+        <label>
+          <span>학과</span>
+          <select data-reco-dept></select>
+        </label>
+        <p class="model-line" data-model-line></p>
+      </div>
+      <div data-reco-groups class="reco-groups"></div>
+    </section>
+
+    <details class="card model-card">
+      <summary>이 추천은 어떻게 만들어지나요?</summary>
+      <ol>
+        <li><b>낱말 나누기</b> — 게시물 제목·본문을 낱말과 한글 두 글자 묶음으로 나누고, '공모전·안내'처럼 모든 글에 나오는 말은 뺍니다.</li>
+        <li><b>문서 벡터</b> — 낱말마다 TF-IDF 가중치를 매깁니다. 흔한 낱말은 낮게, 특정 글에만 나오는 낱말은 높게 칩니다. 제목은 두 배로 셉니다.</li>
+        <li><b>딥러닝 임베딩</b> — 사전학습된 다국어 트랜스포머가 글의 뜻을 384차원 벡터로 바꿉니다. 'AI 숏폼'과 '영상 콘텐츠'처럼 글자가 달라도 뜻이 가까우면 찾아냅니다.</li>
+        <li><b>학과 벡터 학습</b> — 학과마다 전공 분야를 적은 프로필에서 시작해, 관리자가 그 학과를 대상으로 체크한 글과 그 학과 학생이 댓글을 단 글의 특징을 더합니다 (Rocchio). 두 벡터 모두에 적용합니다.</li>
+        <li><b>관련도</b> — 임베딩 유사도 70%와 TF-IDF 유사도 30%를 합쳐 0~100점으로 보정합니다. 겹친 낱말 가운데 영향이 큰 것을 근거로 보여 줍니다.</li>
+      </ol>
+      <p class="hint">외부 AI 서비스를 쓰지 않고 이 서버 안에서 계산합니다. 글이나 댓글이 늘면 자동으로 다시 학습합니다. 임베딩 서비스가 꺼져 있으면 TF-IDF 만으로 추천합니다.</p>
+    </details>
   </div>
 </template>
 
@@ -139,6 +208,36 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>이 공모전 팀원 모집 <span data-recruit-count class="muted"></span></h2>
+        <a class="btn small" data-recruit-new>이 공모전으로 팀원 모집</a>
+      </div>
+      <div data-recruits class="mini-list"></div>
+    </section>
+
+    <section class="card ml-card" data-ml hidden>
+      <div class="card-head">
+        <span class="ai-badge">AI</span>
+        <h2>이 공모전과 관련 있는 학과</h2>
+        <span class="muted small">자체 모델</span>
+      </div>
+      <div class="ml-depts" data-ml-depts></div>
+    </section>
+
+    <section class="card ai-card" data-ai hidden>
+      <div class="card-head">
+        <span class="ai-badge">AI</span>
+        <h2>AI 분석</h2>
+        <span class="muted small" data-ai-meta></span>
+      </div>
+      <p class="ai-summary" data-ai-summary></p>
+      <div class="tag-list" data-ai-tags></div>
+      <h3 class="ai-sub">관련 학과</h3>
+      <div class="ai-depts" data-ai-depts></div>
+      <p class="hint">AI 가 본문을 읽고 판단한 관련도입니다. 댓글 권한과는 관계없습니다.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>댓글 <span data-count class="muted"></span></h2>
       </div>
       <div data-comments class="comments"></div>
@@ -153,35 +252,368 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 로그인 / 가입 -->
-<template id="tpl-auth">
-  <div class="auth-grid">
+<!-- ────────────────────────────────────────────── 팀원 모집 게시판 -->
+<template id="tpl-recruits">
+  <div class="stack">
     <section class="card">
-      <div class="card-head"><h2>로그인</h2></div>
-      <form data-login class="stack-sm">
-        <label><span>학번</span><input name="student_no" inputmode="numeric" autocomplete="username" required></label>
-        <label><span>비밀번호</span><input name="password" type="password" autocomplete="current-password" required></label>
-        <button type="submit">로그인</button>
+      <div class="card-head">
+        <h2>팀원 모집 <span data-count class="muted"></span></h2>
+        <a class="btn" href="#/recruits/new" data-new>모집글 쓰기</a>
+      </div>
+      <div class="filters three">
+        <label><span>분야·역할</span><select data-f="tag"><option value="">전체</option></select></label>
+        <label><span>상태</span>
+          <select data-f="status">
+            <option value="open">모집 중</option>
+            <option value="all">전체</option>
+          </select>
+        </label>
+        <label><span>정렬</span>
+          <select data-f="sort">
+            <option value="new">최신순</option>
+            <option value="match">나와 맞는 순 (AI)</option>
+          </select>
+        </label>
+      </div>
+    </section>
+    <div data-list class="recruit-grid"></div>
+  </div>
+</template>
+
+<template id="tpl-recruit-new">
+  <div class="stack">
+    <a class="back" href="#/recruits">← 모집 게시판</a>
+    <section class="card">
+      <div class="card-head"><h2>모집글 쓰기</h2></div>
+      <form data-form class="stack-sm">
+        <label><span>함께 나갈 공모전 <small>선택</small></span><select name="post_id"><option value="0">공모전 선택 안 함</option></select></label>
+        <label><span>제목</span><input name="title" maxlength="200" required placeholder="예) AI 영상 공모전 편집자 1명 구해요"></label>
+        <div class="form-grid">
+          <label><span>모집 인원</span><input name="need_people" type="number" min="1" max="20" value="1" required></label>
+          <label><span>모집 마감일 <small>선택</small></span><input name="deadline" type="date"></label>
+        </div>
+        <fieldset class="picker-box">
+          <legend>찾는 분야·역할 <small data-pick-count>최대 8개</small></legend>
+          <div data-tag-picker></div>
+        </fieldset>
+        <label><span>내용</span><textarea name="body" rows="6" required
+          placeholder="어떤 작품을 만들 계획인지, 어떤 팀원을 찾는지, 회의 방식(온라인/대면)과 일정을 적어 주세요."></textarea></label>
+        <div class="row"><button type="submit">등록</button></div>
       </form>
     </section>
+  </div>
+</template>
 
+<template id="tpl-recruit">
+  <div class="stack">
+    <a class="back" href="#/recruits">← 모집 게시판</a>
+    <article class="card post">
+      <div class="post-head">
+        <div class="item-top" data-tags-top></div>
+        <h2 data-title></h2>
+      </div>
+      <dl class="meta">
+        <div><dt>작성자</dt><dd data-author></dd></div>
+        <div><dt>모집 인원</dt><dd data-need></dd></div>
+        <div><dt>모집 마감</dt><dd data-deadline></dd></div>
+        <div><dt>등록</dt><dd data-created></dd></div>
+      </dl>
+      <p class="linked-post" data-post></p>
+      <p class="body" data-body></p>
+      <div class="tag-list" data-want></div>
+      <div class="match-box" data-match hidden></div>
+      <div class="row owner-actions" data-owner hidden>
+        <button class="ghost small" data-toggle></button>
+        <button class="ghost small danger" data-delete>삭제</button>
+      </div>
+    </article>
     <section class="card">
-      <div class="card-head"><h2>회원가입</h2></div>
-      <p class="hint top">소속 학과는 댓글 권한을 가리는 기준이라 가입할 때 꼭 정해야 합니다.</p>
-      <form data-register class="stack-sm">
-        <label><span>학번</span><input name="student_no" inputmode="numeric" required></label>
-        <label><span>이름</span><input name="name" required></label>
-        <label><span>전화번호</span><input name="phone" type="tel" inputmode="numeric" placeholder="010-0000-0000" required></label>
-        <label><span>비밀번호 <small>8자 이상</small></span><input name="password" type="password" autocomplete="new-password" required></label>
-        <label><span>소속 학과</span><select name="department_id" required></select></label>
+      <div class="card-head"><h2>댓글 <span data-count class="muted"></span></h2></div>
+      <div data-comments class="comments"></div>
+      <form data-comment-form class="comment-form">
+        <textarea name="body" rows="3" maxlength="1000" placeholder="참여하고 싶다면 할 수 있는 일과 연락 방법을 남겨 주세요"></textarea>
+        <div class="row spread">
+          <p data-reason class="reason"></p>
+          <button type="submit">등록</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 팀원 찾기 / 내 프로필 -->
+<template id="tpl-people">
+  <div class="stack">
+    <section class="reco">
+      <div class="reco-head">
+        <span class="ai-badge">AI</span>
+        <div>
+          <h2>나와 성향이 잘 맞을 회원</h2>
+          <p class="muted">고른 관심 키워드와 자기소개를 자체 모델로 비교했습니다. 많은 사람이 고른 키워드보다 드문 키워드가 겹칠수록 점수가 높습니다.</p>
+        </div>
+        <a class="more" href="#/me">내 키워드 바꾸기 →</a>
+      </div>
+      <div class="my-tags" data-my-tags></div>
+      <div class="people-grid" data-list></div>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── AI 구조 소개 -->
+<template id="tpl-ai">
+  <div class="stack aiarch">
+    <section class="reco">
+      <div class="reco-head">
+        <span class="ai-badge">AI</span>
+        <div>
+          <h2>SKU14 추천 AI 는 이렇게 생겼습니다</h2>
+          <p class="muted">공모전 추천 · 개인 맞춤 · 팀원 찾기는 모두 하나의 자체 모델이 계산합니다.
+            글자를 보는 <b>TF-IDF</b> 와 뜻을 보는 <b>딥러닝 임베딩</b>을 함께 쓰고, 관리자 체크 · 댓글 · ♥ 같은
+            학생들의 행동으로 계속 다시 학습합니다. 외부 유료 API 없이 이 서버 안에서 돌아갑니다.</p>
+        </div>
+      </div>
+      <div class="aa-stats" data-stats>
+        <div class="aa-stat"><span>지금 모드</span><b data-s="mode">불러오는 중…</b></div>
+        <div class="aa-stat"><span>딥러닝 모델</span><b data-s="emb">-</b></div>
+        <div class="aa-stat"><span>학습한 게시물</span><b data-s="posts">-</b></div>
+        <div class="aa-stat"><span>학과 벡터</span><b data-s="depts">-</b></div>
+        <div class="aa-stat"><span>행동 학습 데이터</span><b data-s="labels">-</b></div>
+        <div class="aa-stat"><span>마지막 학습</span><b data-s="trained">-</b></div>
+      </div>
+    </section>
+
+    <!-- 전체 구조도 -->
+    <section class="card">
+      <div class="card-head"><h2>전체 구조</h2><span class="muted small">위에서 아래로 데이터가 흐릅니다</span></div>
+      <div class="aa-flow">
+        <div class="aa-layer">
+          <p class="aa-lt">① 입력</p>
+          <div class="aa-boxes">
+            <div class="aa-box"><b>공모전 게시물</b><span>학교 공지 2년치를 8개 검색어로 수집 · 제목 + 본문</span></div>
+            <div class="aa-box"><b>학과 프로필</b><span>학과마다 적어 둔 전공 키워드</span></div>
+            <div class="aa-box"><b>회원 · 모집글</b><span>관심 키워드 · 자기소개 · 모집 내용</span></div>
+            <div class="aa-box sig"><b>행동 신호</b><span>관리자 체크 1.0 · 댓글 0.5 · ♥ 0.5</span></div>
+          </div>
+        </div>
+
+        <div class="aa-layer">
+          <p class="aa-lt">② 두 개의 눈 — 글을 벡터로</p>
+          <div class="aa-split">
+            <div class="aa-branch tfidf">
+              <p class="aa-bt">글자를 보는 눈 · TF-IDF <em>30%</em></p>
+              <ol>
+                <li>낱말 + 한글 두 글자 묶음으로 쪼개기 <small>형태소 분석기 없이</small></li>
+                <li>조사 떼기 · 동의어 묶기 <small>숏폼 → 영상, 코딩 → 개발</small></li>
+                <li>'공모전·안내' 같은 상투어 빼기</li>
+                <li>드문 낱말일수록 높은 가중치 <small>(1 + ln tf) × idf</small></li>
+              </ol>
+              <p class="aa-out">→ 수천 차원 희소 벡터 · 겹친 낱말을 근거로 보여 줌</p>
+            </div>
+            <div class="aa-branch emb">
+              <p class="aa-bt">뜻을 보는 눈 · 딥러닝 임베딩 <em>70%</em></p>
+              <ol>
+                <li>사전학습 트랜스포머 <small>multilingual-e5-small · 12층 · 약 1.2억 파라미터</small></li>
+                <li>게시물은 <code>passage:</code>, 학과·관심사는 <code>query:</code> 로 넣기</li>
+                <li>문장 전체의 뜻을 384개 숫자로 압축</li>
+                <li>한 번 계산한 글은 캐시 <small>SQLite</small></li>
+              </ol>
+              <p class="aa-out">→ 384차원 밀집 벡터 · 글자가 달라도 뜻이 가까우면 가까움</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="aa-layer">
+          <p class="aa-lt">③ 학습 — Rocchio</p>
+          <div class="aa-boxes one">
+            <div class="aa-box wide"><b>학과 벡터 = 프로필 벡터 + β × (그 학과와 연결된 게시물 벡터 평균)</b>
+              <span>관리자가 대상 학과로 체크한 글, 그 학과 학생이 댓글 단 글, 학생이 ♥ 누른 모집글의 공모전이
+                "연결"이 됩니다. 두 눈(TF-IDF · 임베딩) 모두에 같은 식을 적용합니다.</span></div>
+          </div>
+        </div>
+
+        <div class="aa-layer">
+          <p class="aa-lt">④ 비교 — 하이브리드 유사도</p>
+          <div class="aa-boxes">
+            <div class="aa-box"><b>코사인 유사도</b><span>두 벡터가 같은 방향일수록 1</span></div>
+            <div class="aa-box"><b>0.7 × 임베딩 + 0.3 × TF-IDF</b><span>임베딩은 평균(μ) 기준으로 다시 펴서 섞음</span></div>
+            <div class="aa-box sig"><b>+ 협업 신호</b><span>같은 모집글 ♥ · 내 글에 ♥ 가산점 (팀원 찾기)</span></div>
+            <div class="aa-box"><b>0 ~ 100점 보정</b><span>데이터 분포에 맞춰 τ 자동 조정</span></div>
+            <div class="aa-box"><b>적합 확률</b><span>로지스틱 보정 (Platt scaling) · 정답이 쌓일수록 정확</span></div>
+          </div>
+        </div>
+
+        <div class="aa-layer">
+          <p class="aa-lt">⑤ 출력</p>
+          <div class="aa-boxes">
+            <a class="aa-box out" href="#/reco"><b>학과별 추천</b><span>학과 ↔ 공모전</span></a>
+            <a class="aa-box out" href="#/reco"><b>개인 맞춤</b><span>학과 + 내 관심사 + 내가 ♥한 글</span></a>
+            <a class="aa-box out" href="#/people"><b>팀원 찾기</b><span>회원 ↔ 회원</span></a>
+            <a class="aa-box out" href="#/recruits"><b>나와 맞는 순</b><span>회원 ↔ 모집글</span></a>
+            <a class="aa-box out" href="#/admin"><b>새 글 학과 확률</b><span>관리자가 쓰는 동안 실시간 · 재학습 없이</span></a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 왜 두 개의 눈인가 -->
+    <section class="card">
+      <div class="card-head"><h2>왜 두 가지를 섞나요?</h2></div>
+      <div class="aa-compare">
+        <div>
+          <p class="aa-bt">TF-IDF 만 쓰면</p>
+          <p>"AI 숏폼 영상 공모전" 과 "미디어영상학과" 는 <b>영상</b> 이 겹쳐서 잘 찾지만,
+            "탄소중립 아이디어" 와 "화학생명공학과" 처럼 <b>겹치는 글자가 없으면</b> 놓칩니다.</p>
+        </div>
+        <div>
+          <p class="aa-bt">임베딩만 쓰면</p>
+          <p>뜻은 잘 잡지만 <b>왜 추천했는지</b> 낱말로 설명하기 어렵고, 관계없는 글끼리도
+            유사도가 0.8 근처로 몰려 점수 차이가 작습니다.</p>
+        </div>
+        <div>
+          <p class="aa-bt">그래서 둘 다</p>
+          <p>순위는 주로 <b>뜻(70%)</b> 으로 정하고, 정확히 겹치는 키워드(30%)로 보정하며,
+            화면의 근거 키워드는 TF-IDF 쪽에서 뽑습니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 핵심 식 -->
+    <section class="card">
+      <div class="card-head"><h2>핵심 식</h2><span class="muted small">src/ml.c</span></div>
+      <div class="aa-formulas">
+        <div class="aa-f"><span>TF-IDF 가중치</span><code>w = (1 + ln tf) × (ln((N+1)/(df+1)) + 1)</code></div>
+        <div class="aa-f"><span>Rocchio 반영 정도</span><code>β = 0.75 × W / (W + 1.5)</code><small>연결이 적을수록 프로필을 더 믿음</small></div>
+        <div class="aa-f"><span>임베딩 펴기</span><code>e′ = max(0, (cos − μ) / (1 − μ))</code><small>μ = 전체 쌍의 평균 유사도</small></div>
+        <div class="aa-f"><span>최종 유사도</span><code>s = 0.7 × e′ + 0.3 × tfidf (+ 협업 가산점)</code></div>
+        <div class="aa-f"><span>협업 가산점</span><code>0.15 × Jaccard(♥) + 0.10 × [서로의 글에 ♥]</code></div>
+        <div class="aa-f"><span>점수</span><code>score = 100 × (1 − e<sup>−s/τ</sup>)</code><small>상위 10% 지점이 80점이 되게 τ 결정</small></div>
+        <div class="aa-f"><span>적합 확률</span><code>P = 1 / (1 + e<sup>−(a·s + b)</sup>)</code><small>정답 쌍으로 로지스틱 회귀 · 정답이 적으면 사전값(중앙값 5%, 상위 10% 70%) 쪽으로</small></div>
+      </div>
+    </section>
+
+    <!-- 시스템 구성 -->
+    <section class="card">
+      <div class="card-head"><h2>시스템 구성</h2></div>
+      <div class="aa-sys">
+        <div class="aa-node"><b>브라우저</b><span>이 화면</span></div>
+        <span class="aa-arrow" aria-hidden="true">⇄</span>
+        <div class="aa-node main"><b>C 서버</b><span>server.exe · TF-IDF · Rocchio · 점수 계산</span></div>
+        <span class="aa-arrow" aria-hidden="true">⇄</span>
+        <div class="aa-node"><b>임베딩 서비스</b><span>Python · PyTorch · 127.0.0.1:8001</span></div>
+      </div>
+      <div class="aa-sys sub">
+        <div class="aa-node"><b>MySQL</b><span>게시물 · 회원 · 체크 · 댓글 · ♥</span></div>
+        <div class="aa-node"><b>Claude API <small>선택</small></b><span>요약 · 태그 · 마감일 추출 (키가 있을 때만)</span></div>
+      </div>
+      <ul class="aa-notes">
+        <li><b>자동 재학습</b> — 글 · 댓글 · ♥ 가 바뀌면 다음 요청 때 수 초 안에 다시 학습합니다.</li>
+        <li><b>실시간 예측</b> — 관리자가 새 글을 쓰는 동안, 다시 학습하지 않고 지금 모델로 학과별 적합 확률을
+          0.1초 안에 계산해 대상 학과 체크를 돕습니다. 게시하면 그 글까지 넣어 다시 학습합니다.</li>
+        <li><b>안전한 대체</b> — 임베딩 서비스가 꺼져 있으면 TF-IDF 만으로 계속 추천하고, 다시 켜지면 자동으로 합칩니다.</li>
+        <li><b>미세조정</b> — 학습 데이터가 쌓이면 <code>ml/finetune.py</code> 가 트랜스포머를 대조학습하고,
+          떼어 둔 평가 데이터(Recall@5 · MRR)에서 나아졌을 때만 교체합니다.</li>
+      </ul>
+    </section>
+  </div>
+</template>
+
+<template id="tpl-me">
+  <div class="stack">
+    <section class="card">
+      <div class="card-head">
+        <h2>내 프로필</h2>
+        <span class="muted small" data-who></span>
+      </div>
+      <form data-form class="stack-sm">
+        <fieldset class="picker-box">
+          <legend>관심 키워드 <small data-pick-count>1~8개</small></legend>
+          <div data-interest-picker></div>
+        </fieldset>
+        <label>
+          <span>자기소개 <small>다른 회원에게 보입니다 · 실명·연락처는 적지 마세요</small></span>
+          <textarea name="bio" rows="5" maxlength="500"></textarea>
+        </label>
+        <div class="row">
+          <button type="submit">저장</button>
+          <a href="#/people">나와 맞는 회원 보기 →</a>
+        </div>
+      </form>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 로그인 / 가입 -->
+<template id="tpl-auth">
+  <div class="auth-wrap">
+    <!-- 로그인: 처음에 보이는 화면 -->
+    <section class="card auth-card" data-login-card>
+      <div class="auth-title">
+        <span class="logo-mark">SKU<b>14</b></span>
+        <h2>로그인</h2>
+        <p class="muted small">공모전 정보와 팀원 모집을 한곳에서</p>
+      </div>
+      <form data-login class="stack-sm">
+        <label><span>아이디 <small>학번</small></span><input name="student_no" inputmode="numeric" autocomplete="username" required></label>
+        <label><span>비밀번호</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="block">로그인</button>
+      </form>
+      <p class="auth-switch">아직 계정이 없나요? <a href="#/register">회원가입</a></p>
+    </section>
+
+    <!-- 회원가입: 로그인 아래 링크로 연다 -->
+    <section class="card auth-card wide" data-register-card hidden>
+      <div class="card-head">
+        <h2>회원가입</h2>
+        <a class="small" href="#/login">← 로그인으로</a>
+      </div>
+      <form data-register class="stack-sm" novalidate>
+        <fieldset class="auth-box" data-email-box>
+          <legend>학교 이메일 인증 <small>필수</small></legend>
+          <div class="code-row">
+            <input name="email" type="email" autocomplete="email" placeholder="아이디@skuniv.ac.kr"
+                   pattern="[A-Za-z0-9._\-]+@skuniv\.ac\.kr" required>
+            <button type="button" class="ghost" data-send-code>인증 코드 받기</button>
+          </div>
+          <div class="code-row" data-code-row hidden>
+            <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+                   placeholder="메일로 받은 6자리 코드">
+            <span class="code-timer" data-timer></span>
+            <button type="button" data-verify-code>확인</button>
+          </div>
+          <p class="auth-msg muted small" data-code-msg>@skuniv.ac.kr 로 끝나는 학교 이메일만 쓸 수 있습니다.</p>
+        </fieldset>
+
+        <fieldset class="auth-box">
+          <legend>기본 정보 <small>필수</small></legend>
+          <div class="form-grid">
+            <label><span>학번 <small>로그인 아이디</small></span><input name="student_no" inputmode="numeric" required></label>
+            <label><span>이름</span><input name="name" required></label>
+            <label><span>전화번호</span><input name="phone" type="tel" inputmode="numeric" placeholder="010-0000-0000" required></label>
+            <label><span>비밀번호 <small>8자 이상</small></span><input name="password" type="password" autocomplete="new-password" required></label>
+          </div>
+          <label class="mt"><span>소속 학과 <small>댓글 권한을 가리는 기준</small></span><select name="department_id" required></select></label>
+        </fieldset>
 
         <div class="namecard">
           <span class="namecard-label">게시판에 표시될 이름</span>
           <b data-preview>···</b>
-          <span class="namecard-note">이름과 전화번호로 자동으로 만들어집니다. 실명과 전화번호는 공개되지 않습니다.</span>
+          <span class="namecard-note">이름과 전화번호로 자동으로 만들어집니다. 실명·전화번호·이메일은 공개되지 않습니다.</span>
         </div>
 
-        <button type="submit">가입</button>
+        <details class="auth-optional">
+          <summary>관심 키워드 · 자기소개 <small>선택 · 적어 두면 공모전·팀원 추천이 더 잘 맞습니다</small></summary>
+          <fieldset class="picker-box">
+            <legend>관심 키워드 <small data-pick-count>0~8개</small></legend>
+            <div data-interest-picker></div>
+          </fieldset>
+          <label>
+            <span>자기소개</span>
+            <textarea name="bio" rows="4" maxlength="500"
+              placeholder="예) 단편영화를 두 편 찍어 봤고 편집을 맡고 싶어요. 주말에 대면 회의 가능한 영상 공모전 팀을 찾습니다."></textarea>
+          </label>
+        </details>
+
+        <button type="submit" class="block">인증하고 가입하기</button>
       </form>
     </section>
   </div>
@@ -197,12 +629,29 @@
         <h2>학교 공지 수집</h2>
       </div>
       <p class="hint top">
-        skuniv.ac.kr 공지에서 &lsquo;공모전&rsquo;, &lsquo;해커톤&rsquo; 검색 결과를 가져옵니다.
-        3개월 이내 공지만 담으며, 받아온 공지는 바로 게시판에 공개됩니다.
+        skuniv.ac.kr 공지에서 &lsquo;공모전&rsquo;, &lsquo;해커톤&rsquo;, &lsquo;경진대회&rsquo;, &lsquo;챌린지&rsquo; 등
+        8개 검색어로 최근 2년 공지를 가져오고, 제목으로 참가할 수 있는 공모전·대회만 남깁니다
+        (수상자 발표·장학금·서포터즈 제외). 받아온 공지는 바로 게시판에 공개되고 추천 AI 학습에 쓰입니다.
       </p>
       <div class="row">
         <button data-crawl>지금 수집하기</button>
         <span data-crawl-msg class="muted"></span>
+      </div>
+    </section>
+
+    <section class="card ai-card">
+      <div class="card-head">
+        <span class="ai-badge">AI</span>
+        <h2>AI 게시물 분석</h2>
+      </div>
+      <p class="hint top">
+        Claude 가 게시물 본문을 읽고 요약·태그·주최·마감일과 학과별 관련도를 정리합니다.
+        새로 수집하거나 등록한 글은 자동으로 분석되며, 추천은 저장된 결과로만 계산합니다.
+      </p>
+      <div data-ai-status class="ai-status"></div>
+      <div class="row">
+        <button data-ai-run>새 글 분석</button>
+        <button data-ai-force class="ghost">전체 다시 분석</button>
       </div>
     </section>
 
@@ -232,6 +681,17 @@
           <label><span>원본 링크</span><input name="source_url" type="url" placeholder="선택"></label>
         </div>
         <label><span>내용</span><textarea name="body" rows="5" required></textarea></label>
+        <section class="predict-box" data-predict>
+          <div class="predict-head">
+            <span class="ai-badge">AI</span>
+            <div>
+              <strong>학과별 적합 확률 <small class="muted">입력하는 동안 실시간 계산</small></strong>
+              <p class="muted small" data-predict-meta>제목과 내용을 쓰면 지금까지 학습한 모델이 학과마다 맞을 확률을 바로 매깁니다.</p>
+            </div>
+            <button type="button" class="ghost small" data-predict-apply hidden>30% 이상 학과 체크</button>
+          </div>
+          <div class="predict-list" data-predict-list></div>
+        </section>
         <fieldset class="deptbox">
           <legend>대상 학과 <small>체크한 학과만 댓글 가능 · 비워 두면 전체 공개</small></legend>
           <div data-dept-checks class="dept-grid"></div>

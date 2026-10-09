@@ -1,6 +1,8 @@
 /* 디스패처, 정적 파일 제공, 인증(가입/로그인/세션), 학과 목록 */
 #include "api.h"
 #include "db.h"
+#include "ai.h"
+#include "mailer.h"
 #include "sha256.h"
 
 #include <stdio.h>
@@ -284,15 +286,253 @@ static int valid_student_no(const char *s)
     return 1;
 }
 
+/* ---------------------------------------------------- 학교 이메일 인증
+ *
+ *   POST /api/register/send-code   {email}        인증 코드 6자리를 보낸다 (10분 유효, 60초에 한 번)
+ *   POST /api/register/verify-code {email, code}  [확인] 버튼. 맞으면 인증 완료 (30분 안에 가입)
+ *   POST /api/register {..., email}               인증을 마친 이메일이어야 가입된다
+ *                                                 (확인을 건너뛰고 code 를 함께 보내도 된다)
+ * 코드는 5번 틀리면 다시 받아야 한다. 소금 친 해시로만 저장하고, 가입에 성공하면 지운다. */
+
+#define SCHOOL_DOMAIN    "@skuniv.ac.kr"
+#define CODE_TTL_MIN     10
+#define VERIFIED_TTL_MIN 30
+#define CODE_RESEND_SEC  60
+#define CODE_MAX_TRIES   5
+
+/* 학교 이메일만 받는다. 소문자로 바꿔 out 에 담는다. */
+static int school_email(const char *in, char *out, size_t outsz)
+{
+    size_t n = strlen(in), dn = strlen(SCHOOL_DOMAIN), i;
+
+    if (n <= dn || n >= outsz || n > 120)
+        return 0;
+    for (i = 0; i < n; i++)
+        out[i] = (char)tolower((unsigned char)in[i]);
+    out[n] = '\0';
+    if (strcmp(out + n - dn, SCHOOL_DOMAIN) != 0)
+        return 0;
+    for (i = 0; i < n - dn; i++) {          /* 아이디 부분: 영문 소문자·숫자·. _ - */
+        char c = out[i];
+        if (!(isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-'))
+            return 0;
+    }
+    return out[0] != '.' && out[n - dn - 1] != '.';
+}
+
+static void handle_send_code(Request *req, Response *res)
+{
+    Json *in = body_object(req, res);
+    char email[128], code[8], hex[9], salt[PW_SALT_HEX_LEN + 1], hash[PW_HASH_HEX_LEN + 1], err[200];
+    Buf sql, text;
+    long long wait;
+
+    if (!in)
+        return;
+    if (!school_email(json_str(in, "email", ""), email, sizeof email)) {
+        json_free(in);
+        res_error(res, 400, "bad_email", "학교 이메일(@skuniv.ac.kr)만 쓸 수 있습니다.");
+        return;
+    }
+    json_free(in);
+    if (!mail_enabled() && !mail_dev_mode()) {
+        log_err("메일 서버(SKU_SMTP_URL)가 설정되지 않아 인증 메일을 보낼 수 없습니다. smtp.env 를 확인하세요.");
+        res_error(res, 503, "mail_not_configured",
+                  "메일 서버가 설정되지 않아 지금은 인증 메일을 보낼 수 없습니다. 관리자에게 문의하세요.");
+        return;
+    }
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM users WHERE email = %Q", email);
+    if (db_scalar(sql.data, 0) > 0) {
+        buf_free(&sql);
+        res_error(res, 409, "duplicate_email", "이미 가입한 이메일입니다.");
+        return;
+    }
+    buf_reset(&sql);
+    db_sqlf(&sql, "SELECT %d - TIMESTAMPDIFF(SECOND, sent_at, NOW()) FROM email_verifications "
+                  "WHERE email = %Q", CODE_RESEND_SEC, email);
+    wait = db_scalar(sql.data, 0);
+    buf_free(&sql);
+    if (wait > 0) {
+        char msg[96];
+        snprintf(msg, sizeof msg, "%lld초 뒤에 다시 보낼 수 있습니다.", wait);
+        res_error(res, 429, "too_soon", msg);
+        return;
+    }
+
+    /* 6자리 코드 (OS 난수원) */
+    if (!random_hex(hex, 8) || !random_hex(salt, PW_SALT_HEX_LEN)) {
+        res_error(res, 500, "no_entropy", "보안 처리에 실패했습니다. 잠시 후 다시 시도하세요.");
+        return;
+    }
+    snprintf(code, sizeof code, "%06lu", strtoul(hex, NULL, 16) % 1000000ul);
+    pw_hash(salt, code, hash);
+
+    buf_init(&text);
+    buf_printf(&text,
+               "SKU14 공모전 팀원 모집 커뮤니티 가입 인증 코드입니다.\n\n"
+               "    %s\n\n"
+               "가입 화면에 이 코드를 입력하세요. %d분 동안 유효합니다.\n"
+               "직접 요청하지 않았다면 이 메일은 무시하세요.\n", code, CODE_TTL_MIN);
+    if (!mail_send(email, "[SKU14] 이메일 인증 코드", text.data, err, sizeof err)) {
+        buf_free(&text);
+        res_error(res, 502, "mail_failed", err);
+        return;
+    }
+    buf_free(&text);
+
+    buf_init(&sql);
+    db_sqlf(&sql,
+            "INSERT INTO email_verifications (email, code_salt, code_hash, attempts, verified_at, "
+            "                                 sent_at, expires_at) "
+            "VALUES (%Q, %Q, %Q, 0, NULL, NOW(), NOW() + INTERVAL %d MINUTE) "
+            "ON DUPLICATE KEY UPDATE code_salt = VALUES(code_salt), code_hash = VALUES(code_hash), "
+            "attempts = 0, verified_at = NULL, sent_at = NOW(), expires_at = VALUES(expires_at)",
+            email, salt, hash, CODE_TTL_MIN);
+    if (!db_exec_buf(&sql)) {
+        buf_free(&sql);
+        res_error(res, 500, "db_error", "인증 코드를 저장하지 못했습니다.");
+        return;
+    }
+    buf_free(&sql);
+
+    {
+        Buf b;
+        buf_init(&b);
+        buf_puts(&b, "{\"ok\":true,");
+        json_kv_int(&b, "expires_in", CODE_TTL_MIN * 60);   buf_putc(&b, ',');
+        json_kv_int(&b, "resend_in", CODE_RESEND_SEC);      buf_putc(&b, ',');
+        json_kv_bool(&b, "dev_mode", mail_dev_mode());      /* 시험용 개발 모드면 코드는 서버 로그에 */
+        buf_putc(&b, '}');
+        res_json_buf(res, 200, &b);
+        buf_free(&b);
+    }
+}
+
+/* 인증 코드를 확인한다. 맞으면 1, 아니면 응답을 채우고 0 (틀리면 시도 횟수를 늘린다). */
+static int check_code(const char *email, const char *code, Response *res)
+{
+    Buf sql;
+    MYSQL_RES *qr;
+    MYSQL_ROW row;
+    char salt[PW_SALT_HEX_LEN + 1] = { 0 }, want[PW_HASH_HEX_LEN + 1] = { 0 }, got[PW_HASH_HEX_LEN + 1];
+    int attempts = 0, expired = 1, found = 0;
+    size_t i;
+
+    /* 6자리 숫자가 아니면 기회를 깎지 않고 돌려보낸다. */
+    for (i = 0; code[i] && isdigit((unsigned char)code[i]); i++)
+        ;
+    if (i != 6 || code[i]) {
+        res_error(res, 400, "bad_code_format", "메일로 받은 6자리 인증 코드를 입력하세요.");
+        return 0;
+    }
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT code_salt, code_hash, attempts, expires_at < NOW() "
+                  "FROM email_verifications WHERE email = %Q", email);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+    if (qr) {
+        if ((row = mysql_fetch_row(qr)) != NULL) {
+            found = 1;
+            str_copy(salt, sizeof salt, row[0]);
+            str_copy(want, sizeof want, row[1]);
+            attempts = atoi(row[2]);
+            expired = atoi(row[3]);
+        }
+        mysql_free_result(qr);
+    }
+    if (!found) {
+        res_error(res, 400, "no_code", "먼저 이메일 인증 코드를 받으세요.");
+        return 0;
+    }
+    if (expired || attempts >= CODE_MAX_TRIES) {
+        res_error(res, 400, "code_expired", "인증 코드가 만료되었습니다. 다시 받으세요.");
+        return 0;
+    }
+    pw_hash(salt, code, got);
+    if (strcmp(got, want) != 0) {
+        char msg[96];
+        buf_init(&sql);
+        db_sqlf(&sql, "UPDATE email_verifications SET attempts = attempts + 1 WHERE email = %Q", email);
+        db_exec_buf(&sql);
+        buf_free(&sql);
+        snprintf(msg, sizeof msg, "인증 코드가 맞지 않습니다. (남은 기회 %d번)",
+                 CODE_MAX_TRIES - attempts - 1);
+        res_error(res, 400, "bad_code", msg);
+        return 0;
+    }
+    return 1;
+}
+
+/* [확인] 으로 인증을 마쳤고 아직 유효한 이메일이면 1 */
+static int email_verified(const char *email)
+{
+    Buf sql;
+    long long n;
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM email_verifications WHERE email = %Q "
+                  "AND verified_at IS NOT NULL AND expires_at >= NOW()", email);
+    n = db_scalar(sql.data, 0);
+    buf_free(&sql);
+    return n > 0;
+}
+
+static void handle_verify_code(Request *req, Response *res)
+{
+    Json *in = body_object(req, res);
+    char email[128];
+    Buf sql, b;
+
+    if (!in)
+        return;
+    if (!school_email(json_str(in, "email", ""), email, sizeof email)) {
+        json_free(in);
+        res_error(res, 400, "bad_email", "학교 이메일(@skuniv.ac.kr)만 쓸 수 있습니다.");
+        return;
+    }
+    /* 이미 확인한 주소면 다시 맞출 필요 없다 */
+    if (!email_verified(email)) {
+        if (!check_code(email, json_str(in, "code", ""), res)) {
+            json_free(in);
+            return;
+        }
+        buf_init(&sql);
+        db_sqlf(&sql, "UPDATE email_verifications SET verified_at = NOW(), "
+                      "expires_at = NOW() + INTERVAL %d MINUTE WHERE email = %Q", VERIFIED_TTL_MIN, email);
+        if (!db_exec_buf(&sql)) {
+            buf_free(&sql);
+            json_free(in);
+            res_error(res, 500, "db_error", "인증 결과를 저장하지 못했습니다.");
+            return;
+        }
+        buf_free(&sql);
+        log_info("이메일 인증 완료: %s", email);
+    }
+    json_free(in);
+
+    buf_init(&b);
+    buf_puts(&b, "{\"ok\":true,\"verified\":true,");
+    json_kv_int(&b, "expires_in", VERIFIED_TTL_MIN * 60);
+    buf_putc(&b, '}');
+    res_json_buf(res, 200, &b);
+    buf_free(&b);
+}
+
 static void handle_register(Request *req, Response *res)
 {
     Json *in = body_object(req, res);
     const char *student_no, *name, *phone, *password;
+    char email[128];
     unsigned dept_id;
     char salt[PW_SALT_HEX_LEN + 1];
     char hash[PW_HASH_HEX_LEN + 1];
     Buf sql, display;
     long long dept_exists;
+    unsigned tag_ids[16];
+    int ntags;
 
     if (!in)
         return;
@@ -323,6 +563,17 @@ static void handle_register(Request *req, Response *res)
         res_error(res, 400, "weak_password", "비밀번호는 8자 이상이어야 합니다.");
         goto out;
     }
+    if (!school_email(json_str(in, "email", ""), email, sizeof email)) {
+        res_error(res, 400, "bad_email", "학교 이메일(@skuniv.ac.kr)을 입력하세요.");
+        goto out;
+    }
+    /* 관심 키워드는 선택 (0~8개). 고르면 팀원 추천과 개인 맞춤 공모전 추천의 근거가 된다. */
+    ntags = json_uint_array(json_get(in, "interest_ids"), tag_ids,
+                            (int)(sizeof tag_ids / sizeof tag_ids[0]));
+    if (ntags > 8) {
+        res_error(res, 400, "bad_interests", "관심 키워드는 8개까지 고를 수 있습니다.");
+        goto out;
+    }
 
     /* 체크된 학과와 대조할 수 있어야 하므로 소속 학과는 필수다. */
     buf_init(&sql);
@@ -334,6 +585,17 @@ static void handle_register(Request *req, Response *res)
         goto out;
     }
 
+    /* 다른 항목을 다 확인한 뒤 마지막에 이메일 인증을 본다 (입력 실수로 기회를 깎지 않게).
+     * [확인] 으로 이미 인증했으면 통과, 아니면 함께 보낸 코드를 맞춰 본다. */
+    if (!email_verified(email)) {
+        if (!json_str(in, "code", "")[0]) {
+            res_error(res, 400, "not_verified", "이메일 인증 코드를 입력하고 [확인]을 눌러 주세요.");
+            goto out;
+        }
+        if (!check_code(email, json_str(in, "code", ""), res))
+            goto out;
+    }
+
     if (!random_hex(salt, PW_SALT_HEX_LEN)) {
         res_error(res, 500, "no_entropy", "보안 처리에 실패했습니다. 잠시 후 다시 시도하세요.");
         goto out;
@@ -342,21 +604,35 @@ static void handle_register(Request *req, Response *res)
 
     buf_init(&sql);
     db_sqlf(&sql,
-            "INSERT INTO users (student_no, name, phone, nickname, department_id, "
+            "INSERT INTO users (student_no, name, phone, email, nickname, department_id, "
             "                   role, pw_salt, pw_hash) "
-            "VALUES (%Q, %Q, %Q, %Q, %u, 'student', %Q, %Q)",
-            student_no, name, phone, display.data, dept_id, salt, hash);
+            "VALUES (%Q, %Q, %Q, %Q, %Q, %u, 'student', %Q, %Q)",
+            student_no, name, phone, email, display.data, dept_id, salt, hash);
 
     if (!db_exec_buf(&sql)) {
         buf_free(&sql);
         if (db_errno() == DB_ERR_DUP_ENTRY)
-            res_error(res, 409, "duplicate", "이미 등록된 학번입니다.");
+            res_error(res, 409, "duplicate",
+                      strstr(db_error(), "email") ? "이미 가입한 이메일입니다." : "이미 등록된 학번입니다.");
         else
             /* 그 밖의 오류는 뭉뚱그리지 않는다. 자세한 내용은 서버 로그에 남는다. */
             res_error(res, 500, "db_error", "가입 처리 중 오류가 났습니다. 서버 로그를 확인하세요.");
         goto out;
     }
     buf_free(&sql);
+
+    /* 계정은 만들어졌으니 키워드 저장이 실패해도 가입은 성공으로 두고 로그만 남긴다
+     * (내 프로필에서 다시 고를 수 있다). */
+    {
+        unsigned uid = (unsigned)db_last_id();
+
+        buf_init(&sql);
+        db_sqlf(&sql, "DELETE FROM email_verifications WHERE email = %Q", email);   /* 코드는 한 번만 */
+        db_exec_buf(&sql);
+        buf_free(&sql);
+        if (!profile_save(uid, tag_ids, ntags, json_str(in, "bio", "")))
+            log_warn("가입한 회원 %s 의 관심 키워드를 저장하지 못했습니다.", student_no);
+    }
 
     {
         Buf b;
@@ -477,13 +753,15 @@ static void handle_me(Request *req, Response *res)
     Buf b;
 
     buf_init(&b);
-    if (!auth_current(req, &u)) {
-        buf_puts(&b, "{\"user\":null}");
-    } else {
-        buf_puts(&b, "{\"user\":");
+    /* 화면이 AI 메뉴를 보일지 정할 수 있게 함께 알려준다. */
+    buf_putc(&b, '{');
+    json_kv_bool(&b, "ai_enabled", ai_enabled());
+    buf_puts(&b, ",\"user\":");
+    if (!auth_current(req, &u))
+        buf_puts(&b, "null");
+    else
         write_user(&b, &u);
-        buf_putc(&b, '}');
-    }
+    buf_putc(&b, '}');
     res_json_buf(res, 200, &b);
     buf_free(&b);
 }
@@ -543,6 +821,8 @@ static void handle_departments(Response *res)
 int route_auth(Request *req, Response *res)
 {
     if (req_is(req, "POST", "/api/register")) { handle_register(req, res); return 1; }
+    if (req_is(req, "POST", "/api/register/send-code")) { handle_send_code(req, res); return 1; }
+    if (req_is(req, "POST", "/api/register/verify-code")) { handle_verify_code(req, res); return 1; }
     if (req_is(req, "POST", "/api/login"))    { handle_login(req, res);    return 1; }
     if (req_is(req, "POST", "/api/logout"))   { handle_logout(req, res);   return 1; }
     if (req_is(req, "GET",  "/api/me"))       { handle_me(req, res);       return 1; }
@@ -642,6 +922,9 @@ void api_dispatch(Request *req, Response *res)
         if (route_auth(req, res))  return;
         if (route_posts(req, res)) return;
         if (route_admin(req, res)) return;
+        if (route_ai(req, res))    return;
+        if (route_ml(req, res))    return;
+        if (route_community(req, res)) return;
         res_error(res, 404, "no_route", "그런 API 가 없습니다.");
         return;
     }

@@ -6,6 +6,7 @@
 
 #include <windows.h>
 #include <winhttp.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,9 +15,44 @@
 #define SKU_HOST   L"www.skuniv.ac.kr"
 #define USER_AGENT L"SKU-Contest-Board/1.0"
 
-/* 수집에 쓰는 검색어. 과제 명세의 검색 링크(공모전/해커톤)와 같다. */
-static const char *KEYWORDS[] = { "공모전", "해커톤" };
+/* 수집에 쓰는 검색어. 학교 검색은 본문까지 뒤지므로 결과를 제목으로 한 번 더 거른다. */
+static const char *KEYWORDS[] = {
+    "공모전", "해커톤", "경진대회", "공모", "대회", "챌린지", "아이디어", "콘테스트"
+};
 #define KEYWORD_COUNT ((int)(sizeof KEYWORDS / sizeof KEYWORDS[0]))
+#define PER_PAGE      100          /* WordPress REST 의 최대값 */
+#define MAX_PAGES     10
+
+/* 제목에 이 가운데 하나가 있어야 공모전·대회로 본다. */
+static const char *TITLE_INCLUDE[] = {
+    "공모전", "해커톤", "경진대회", "경연대회", "공모", "대회", "챌린지", "콘테스트",
+    "어워드", "AWARD", "Award", "Hack", "HACK", "대전", "전람회", NULL
+};
+/* 참가할 수 없는 글 (결과 발표, 장학금, 서포터즈 모집, 교직원 대상 등) */
+static const char *TITLE_EXCLUDE[] = {
+    "수상자", "결과 발표", "결과발표", "심사결과", "심사 결과", "결과 안내", "장학", "서포터즈",
+    "봉사", "관람안내", "교직원", "채용", "학술대회", "동아리", "이용교육", "이용 교육", NULL
+};
+
+static int contains_any(const char *s, const char *const *list)
+{
+    for (; *list; list++)
+        if (strstr(s, *list))
+            return 1;
+    return 0;
+}
+
+/* 학생이 참가할 수 있는 공모전·대회 공지인지 제목으로 가린다. */
+static int is_contest_title(const char *title)
+{
+    return contains_any(title, TITLE_INCLUDE) && !contains_any(title, TITLE_EXCLUDE);
+}
+
+static int is_hackathon_title(const char *title)
+{
+    static const char *const HACK[] = { "해커톤", "Hack", "HACK", "hack", NULL };
+    return contains_any(title, HACK);
+}
 
 /* ------------------------------------------------------------ 문자열 변환 */
 
@@ -214,6 +250,265 @@ done:
     return ok;
 }
 
+/* ------------------------------------------------------------- 공지 본문 */
+
+/* posts.body 는 TEXT(64KB) 다. 여유를 두고 이 길이(바이트)에서 자른다. */
+#define BODY_MAX   60000
+#define BLANK_MARK '\x01'          /* 원문의 빈 문단(<p>&nbsp;</p>) 자리 */
+
+static const char *const BLOCK_TAGS[] = {
+    "p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table",
+    "ul", "ol", "blockquote", "section", "article", "hr", NULL
+};
+static const char *const SKIP_TAGS[] = {
+    "script", "style", "noscript", "iframe", "caption", NULL
+};
+
+static int tag_in(const char *name, const char *const *list)
+{
+    for (; *list; list++)
+        if (strcmp(name, *list) == 0)
+            return 1;
+    return 0;
+}
+
+/* 태그 사이의 글자 조각을 붙인다. 엔티티를 풀고, 소스의 줄바꿈과 U+00A0 은
+ * 공백으로, U+200B 는 지운다. 공백이 아닌 글자가 있었으면 1. */
+static int append_text(Buf *out, const char *s, size_t n)
+{
+    char *t = (char *)malloc(n + 1);
+    char *r, *w;
+    int has = 0;
+
+    if (!t)
+        return 0;
+    memcpy(t, s, n);
+    t[n] = '\0';
+    html_entity_decode(t);
+
+    for (r = w = t; *r; r++) {
+        unsigned char c = (unsigned char)*r;
+
+        if (c == 0xC2 && (unsigned char)r[1] == 0xA0) {
+            *w++ = ' ';
+            r++;
+        } else if (c == 0xE2 && (unsigned char)r[1] == 0x80 && (unsigned char)r[2] == 0x8B) {
+            r += 2;
+        } else if (c == '\r' || c == '\n' || c == '\t') {
+            *w++ = ' ';
+        } else {
+            if (c != ' ')
+                has = 1;
+            *w++ = (char)c;
+        }
+    }
+    *w = '\0';
+    buf_puts(out, t);
+    free(t);
+    return has;
+}
+
+/* HTML 을 줄 단위 텍스트로 편다. 블록 태그는 줄바꿈, <li> 는 "• ",
+ * 표 칸은 " | " 로 잇고, 이미지와 스크립트 등은 버린다. */
+static void html_flatten(const char *h, Buf *out)
+{
+    int skip = 0, in_cell = 0, cell = 0, had_text = 0;
+
+    while (*h) {
+        const char *lt = strchr(h, '<');
+        size_t n = lt ? (size_t)(lt - h) : strlen(h);
+
+        if (n && !skip && append_text(out, h, n))
+            had_text = 1;
+        if (!lt)
+            break;
+
+        if (strncmp(lt, "<!--", 4) == 0) {
+            const char *end = strstr(lt + 4, "-->");
+            h = end ? end + 3 : lt + strlen(lt);
+            continue;
+        }
+
+        {
+            const char *gt = strchr(lt, '>');
+            const char *p = lt + 1;
+            char name[16];
+            size_t k = 0;
+            int closing = 0;
+
+            if (!gt)
+                break;
+            h = gt + 1;
+
+            if (*p == '/') {
+                closing = 1;
+                p++;
+            }
+            while (p < gt && k + 1 < sizeof name && isalnum((unsigned char)*p))
+                name[k++] = (char)tolower((unsigned char)*p++);
+            name[k] = '\0';
+            if (!k)
+                continue;
+
+            if (tag_in(name, SKIP_TAGS)) {
+                skip += closing ? -1 : 1;
+                if (skip < 0)
+                    skip = 0;
+            } else if (skip) {
+                /* 버리는 구간 안의 태그 */
+            } else if (!strcmp(name, "td") || !strcmp(name, "th")) {
+                if (!closing && cell++)
+                    buf_puts(out, " | ");
+                in_cell = !closing;
+            } else if (tag_in(name, BLOCK_TAGS)) {
+                if (in_cell) {
+                    buf_putc(out, ' ');             /* 칸 안의 문단은 한 줄로 */
+                } else if (!strcmp(name, "br")) {
+                    buf_putc(out, '\n');
+                } else if (!closing) {
+                    buf_putc(out, '\n');
+                    had_text = 0;
+                    if (!strcmp(name, "tr"))
+                        cell = 0;
+                    if (!strcmp(name, "li"))
+                        buf_puts(out, "• ");
+                } else if (!strcmp(name, "p") && !had_text) {
+                    buf_puts(out, "\n\x01\n");      /* BLANK_MARK */
+                } else {
+                    buf_putc(out, '\n');
+                }
+            }
+        }
+    }
+}
+
+/* 링크 주소를 지운다. "(주소)" 는 앞 공백과 괄호까지 함께 지운다. */
+static void strip_urls(char *s)
+{
+    char *r = s, *w = s;
+
+    while (*r) {
+        const char *q = r;
+        int paren = 0;
+
+        if (*q == '(') {
+            paren = 1;
+            for (q++; *q == ' '; q++)
+                ;
+        }
+        if (strncmp(q, "http://", 7) == 0 || strncmp(q, "https://", 8) == 0) {
+            const char *e = q;
+
+            while (*e && *e != ' ' && !(paren && *e == ')'))
+                e++;
+            if (paren) {
+                const char *c = e;
+
+                while (*c == ' ')
+                    c++;
+                if (*c == ')') {
+                    e = c + 1;
+                    while (w > s && w[-1] == ' ')
+                        w--;
+                } else {
+                    *w++ = '(';             /* 닫는 괄호가 없으면 주소만 지운다 */
+                }
+            }
+            r = (char *)e;
+            continue;
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+}
+
+/* 연속 공백을 하나로 줄이고 양끝을 다듬는다. */
+static void collapse_spaces(char *s)
+{
+    char *r, *w;
+
+    for (r = w = s; *r; r++)
+        if (*r != ' ' || (w > s && w[-1] != ' '))
+            *w++ = *r;
+    *w = '\0';
+    str_trim(s);
+}
+
+/* 공지 HTML 을 게시판 본문용 텍스트로 바꿔 out 끝에 붙인다.
+ * 빈 줄은 원문의 빈 문단 자리에만 하나씩 남긴다. 붙인 글이 있으면 1. */
+static int html_to_text(const char *html, Buf *out)
+{
+    size_t start = out->len;
+    int blank = 0;
+    Buf flat;
+    char *line;
+
+    buf_init(&flat);
+    html_flatten(html, &flat);
+
+    for (line = flat.data; line; ) {
+        char *nl = strchr(line, '\n');
+
+        if (nl)
+            *nl = '\0';
+        strip_urls(line);
+        collapse_spaces(line);
+
+        if (line[0] == BLANK_MARK && line[1] == '\0') {
+            blank = (out->len > start);
+        } else if (line[0] && strcmp(line, "•") && strcmp(line, "|")) {
+            char *m;
+
+            while ((m = strchr(line, BLANK_MARK)) != NULL)
+                memmove(m, m + 1, strlen(m));
+            if (out->len > start)
+                buf_puts(out, blank ? "\n\n" : "\n");
+            buf_puts(out, line);
+            blank = 0;
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+    buf_free(&flat);
+
+    if (out->len - start > BODY_MAX) {
+        size_t cut = start + BODY_MAX;
+
+        while (cut > start && ((unsigned char)out->data[cut] & 0xC0) == 0x80)
+            cut--;                                  /* UTF-8 글자 중간에서 자르지 않는다 */
+        out->data[cut] = '\0';
+        out->len = cut;
+    }
+    return out->len > start;
+}
+
+int notice_body_text(long ext_id, Buf *out)
+{
+    char path[96], err[256];
+    Buf resp;
+    Json *root;
+    const Json *content;
+    int ok = 0;
+
+    snprintf(path, sizeof path, "/wp-json/wp/v2/notice/%ld?_fields=content", ext_id);
+    buf_init(&resp);
+    if (!https_get(path, &resp, err, sizeof err)) {
+        log_warn("공지 %ld 본문을 받지 못했습니다: %s", ext_id, err);
+        buf_free(&resp);
+        return 0;
+    }
+
+    root = json_parse(resp.data ? resp.data : "");
+    content = root ? json_path(root, "content", "rendered") : NULL;
+    if (content && content->type == JS_STR)
+        ok = html_to_text(content->str, out);
+    else
+        log_warn("공지 %ld 본문을 해석할 수 없습니다.", ext_id);
+
+    json_free(root);
+    buf_free(&resp);
+    return ok;
+}
+
 /* ------------------------------------------------------------------ 수집 */
 
 /* "2026-09-30T10:00:00" -> "2026-09-30" */
@@ -264,7 +559,7 @@ static int publish_pending_notices(void)
     int count = 0;
 
     res = db_query(
-        "SELECT id, keyword, title, url, DATE_FORMAT(published_at, '%Y-%m-%d') "
+        "SELECT id, keyword, title, url, DATE_FORMAT(published_at, '%Y-%m-%d'), ext_id "
         "FROM notices WHERE status = 'pending' ORDER BY published_at, id");
     if (!res)
         return 0;
@@ -275,25 +570,33 @@ static int publish_pending_notices(void)
         const char *title   = row[2] ? row[2] : "";
         const char *url     = row[3] ? row[3] : "";
         const char *date    = row[4] ? row[4] : "";
-        const char *kind    = (strcmp(keyword, "해커톤") == 0) ? "hackathon" : "contest";
+        long ext_id         = row[5] ? strtol(row[5], NULL, 10) : 0;
+        const char *kind    = (strcmp(keyword, "해커톤") == 0 || is_hackathon_title(title))
+                              ? "hackathon" : "contest";
         Buf body, sql;
         unsigned long long post_id;
 
+        /* 본문은 공지 원문을 텍스트로 옮긴다. 원문 링크는 source_url 에 따로 둔다.
+         * 원문을 못 받으면 출처만 적어 둔다. 학교 서버에 부담을 주지 않게 조금 쉰다. */
         buf_init(&body);
-        buf_printf(&body, "학교 공지 (%s, %s 게시)\n%s", keyword, date, url);
+        if (count)
+            Sleep(200);
+        if (!notice_body_text(ext_id, &body))
+            buf_printf(&body, "학교 공지 (%s, %s 게시)", keyword, date);
 
         if (!db_begin()) {
             buf_free(&body);
             break;
         }
 
-        /* 작성자는 비워 둔다. 사람이 쓴 글이 아니라 학교 공지에서 온 글이다. */
+        /* 작성자는 비워 둔다. 사람이 쓴 글이 아니라 학교 공지에서 온 글이다.
+         * 등록 시각은 학교에 공지가 올라온 날로 둔다 (옛 공지가 새 글처럼 보이지 않게). */
         buf_init(&sql);
         db_sqlf(&sql,
                 "INSERT INTO posts (author_id, kind, title, body, source_url, host, "
-                "                   deadline, need_people) "
-                "VALUES (NULL, '%s', %Q, %Q, %Q, NULL, NULL, 0)",
-                kind, title, body.data, url);
+                "                   deadline, need_people, created_at) "
+                "VALUES (NULL, '%s', %Q, %Q, %Q, NULL, NULL, 0, %Q)",
+                kind, title, body.data, url, date);
         buf_free(&body);
 
         if (!db_exec_buf(&sql)) {
@@ -341,27 +644,35 @@ int crawl_notices(int window_days, CrawlResult *out)
 
     memset(out, 0, sizeof *out);
     if (window_days <= 0)
-        window_days = 92;
+        window_days = 730;
     cutoff_iso(window_days, cutoff, sizeof cutoff);
 
     log_info("공지 수집 시작 (%s 이후)", cutoff);
 
     for (k = 0; k < KEYWORD_COUNT; k++) {
+      int page, seen = 0, kept = 0;
+
+      for (page = 1; page <= MAX_PAGES; page++) {
         Buf path, body;
         Json *root;
-        int i;
+        int i, n;
+        char err[256];
 
         buf_init(&path);
         buf_init(&body);
 
-        buf_puts(&path, "/wp-json/wp/v2/notice?per_page=50&_fields=id,date,link,title&search=");
+        buf_printf(&path, "/wp-json/wp/v2/notice?per_page=%d&page=%d&_fields=id,date,link,title&search=",
+                   PER_PAGE, page);
         url_encode(&path, KEYWORDS[k]);
         buf_puts(&path, "&after=");
         url_encode(&path, cutoff);
 
-        if (!https_get(path.data, &body, out->error, sizeof out->error)) {
+        if (!https_get(path.data, &body, err, sizeof err)) {
             buf_free(&path);
             buf_free(&body);
+            if (page > 1)
+                break;              /* 마지막 페이지를 넘기면 WordPress 가 400 을 준다 */
+            str_copy(out->error, sizeof out->error, err);
             return 0;
         }
 
@@ -375,6 +686,7 @@ int crawl_notices(int window_days, CrawlResult *out)
             return 0;
         }
 
+        n = root->n;
         for (i = 0; i < root->n; i++) {
             const Json *item = root->items[i];
             const Json *title;
@@ -400,6 +712,12 @@ int crawl_notices(int window_days, CrawlResult *out)
             strip_tags(clean);
             html_entity_decode(clean);
             str_trim(clean);
+            seen++;
+            if (!is_contest_title(clean)) {
+                free(clean);
+                continue;
+            }
+            kept++;
 
             out->fetched++;
             if (upsert_notice(id, KEYWORDS[k], clean,
@@ -411,11 +729,13 @@ int crawl_notices(int window_days, CrawlResult *out)
             free(clean);
         }
 
-        log_info("  '%s' 검색: %d건 처리", KEYWORDS[k], root->n);
-
         json_free(root);
         buf_free(&path);
         buf_free(&body);
+        if (n < PER_PAGE)
+            break;
+      }
+      log_info("  '%s' 검색: %d건 중 공모전·대회 %d건", KEYWORDS[k], seen, kept);
     }
 
     /* 받아온 공지를 바로 공개한다. */

@@ -38,6 +38,14 @@ int  json_uint_array(const Json *arr, unsigned *out, int max);
 int  route_auth(Request *req, Response *res);
 int  route_posts(Request *req, Response *res);
 int  route_admin(Request *req, Response *res);
+int  route_ai(Request *req, Response *res);
+int  route_ml(Request *req, Response *res);
+int  route_community(Request *req, Response *res);
+
+/* 관심 키워드 이름과 자기소개를 이어 붙인 글 (추천 개인화용). 내용이 있으면 1. */
+int  profile_text(unsigned user_id, Buf *out);
+/* 관심 키워드(최대 8개)와 자기소개를 저장한다. 성공 시 1. */
+int  profile_save(unsigned user_id, const unsigned *tag_ids, int ntags, const char *bio);
 
 /* 전체 디스패처 (main 에서 http_serve 에 넘긴다) */
 void api_dispatch(Request *req, Response *res);
