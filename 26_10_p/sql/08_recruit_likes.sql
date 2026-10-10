@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS recruit_likes (
   recruit_id INT UNSIGNED NOT NULL,
   user_id    INT UNSIGNED NOT NULL,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (recruit_id, user_id),
+  PRIMARY KEY (recruit_id, user_id),                -- 같은 사람이 같은 글에 두 번 누를 수 없다
   KEY ix_recruit_likes_user (user_id),
   CONSTRAINT fk_rl_recruit FOREIGN KEY (recruit_id) REFERENCES recruits (id) ON DELETE CASCADE,
   CONSTRAINT fk_rl_user    FOREIGN KEY (user_id)    REFERENCES users (id) ON DELETE CASCADE

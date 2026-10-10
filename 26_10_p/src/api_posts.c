@@ -1,7 +1,19 @@
 /* 공모전 게시물 조회와 댓글.
  *
  * 댓글 권한의 핵심 규칙: 관리자가 게시물에 체크한 학과(post_departments)에
- * 소속된 사용자만 댓글을 쓸 수 있다. 관리자는 항상 쓸 수 있다. */
+ * 소속된 사용자만 댓글을 쓸 수 있다. 관리자는 항상 쓸 수 있다.
+ *
+ * 이 파일이 담당하는 API:
+ *   GET    /api/posts                  게시물 목록 (?department_id=, ?kind=, ?mine=1 로 거르기)
+ *   GET    /api/posts/{id}             게시물 상세 + 댓글 + 권한 + AI/모델 분석 + 관련 모집글
+ *   POST   /api/posts/{id}/comments    댓글 작성 {"body":"..."}
+ *   DELETE /api/comments/{id}          댓글 삭제 (본인 또는 관리자)
+ *
+ * 관련 테이블:
+ *   posts             게시물 (kind = contest/hackathon/etc, author_id 가 NULL 이면 자동 수집된 학교 공지)
+ *   post_departments  (게시물, 대상 학과) - 관리자가 체크한 "댓글 가능 학과"
+ *   comments          댓글
+ */
 #include "api.h"
 #include "db.h"
 #include "ml.h"
@@ -10,7 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define COMMENT_MAX_LEN 1000
+#define COMMENT_MAX_LEN 1000   /* 댓글 최대 길이 (바이트) */
 
 /* 게시물에 체크된 학과 수. 0 이면 대상 학과를 지정하지 않은 글이다. */
 static int post_department_count(unsigned post_id)
@@ -31,7 +43,7 @@ static int department_allowed(unsigned post_id, unsigned department_id)
     Buf sql;
     long long n;
 
-    if (!department_id)
+    if (!department_id)        /* 학과 없는 사용자는 어떤 대상 학과에도 해당하지 않는다 */
         return 0;
 
     buf_init(&sql);
@@ -49,7 +61,11 @@ static int department_allowed(unsigned post_id, unsigned department_id)
  *   - 비로그인      -> 불가 (글은 볼 수 있지만 댓글은 못 쓴다)
  *   - 관리자        -> 항상 가능
  *   - 대상 학과 미지정 -> 로그인한 누구나 가능
- *   - 대상 학과 지정됨 -> 체크된 학과 소속만 가능  <- 과제의 핵심 제약 */
+ *   - 대상 학과 지정됨 -> 체크된 학과 소속만 가능  <- 과제의 핵심 제약
+ *
+ * 이 함수는 화면 표시(목록·상세의 can_comment)와 실제 저장(handle_comment_create)
+ * 양쪽에서 쓰인다. 화면에서 버튼을 숨기는 것만으로는 부족하고, 서버가 저장 직전에
+ * 다시 검사해야 개발자 도구로 요청을 직접 보내는 우회를 막을 수 있다. */
 static int can_comment(const CurrentUser *u, unsigned post_id, const char **reason)
 {
     if (!u->id) {
@@ -74,21 +90,27 @@ static int can_comment(const CurrentUser *u, unsigned post_id, const char **reas
 
 /* ------------------------------------------------------------ 게시물 목록 */
 
+/* GET /api/posts?department_id=3&kind=contest&mine=1
+ * 로그인하지 않아도 볼 수 있다(auth_current 결과를 검사하지 않음). */
 static void handle_post_list(Request *req, Response *res)
 {
     CurrentUser u;
-    char dept[16], kind[20], only_mine[8];
+    char dept[16], kind[20], only_mine[8];   /* 쿼리 파라미터들 */
     Buf sql, b;
     MYSQL_RES *qr;
     MYSQL_ROW row;
     int first = 1;
 
-    auth_current(req, &u);
+    auth_current(req, &u);   /* 비로그인이어도 계속 (u.id == 0) */
 
     req_query(req, "department_id", dept, sizeof dept);
     req_query(req, "kind", kind, sizeof kind);
     req_query(req, "mine", only_mine, sizeof only_mine);
 
+    /* 기본 SELECT. 여기는 db_sqlf 가 아니라 buf_puts 로 넣으므로 '%Y' 의 % 를 두 번 쓸 필요가 없다.
+     * '\\r' 은 C 문자열에서 역슬래시 하나가 되어, MySQL 에는 '\r'(CR 문자) 로 전달된다.
+     * 마지막의 "WHERE 1 = 1" 은 항상 참인 조건으로, 뒤에 " AND ..." 조건을 몇 개 붙이든
+     * 문법이 맞도록 하는 동적 SQL 관용구다. */
     buf_init(&sql);
     buf_puts(&sql,
              /* 주최·마감일이 비어 있으면 AI 가 본문에서 찾은 값으로 채운다. */
@@ -100,9 +122,11 @@ static void handle_post_list(Request *req, Response *res)
              /* 작성자가 없는 글은 학교 공지에서 자동으로 올라온 글이다. */
              "       IFNULL(u.nickname, IF(p.source_url IS NULL, '(탈퇴)', '학교 공지')), "
              "       (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id), "
+             /* 대상 학과 이름들을 "컴퓨터공학과, 소프트웨어학과" 처럼 한 문자열로 합친다 */
              "       (SELECT GROUP_CONCAT(d.name ORDER BY d.sort SEPARATOR ', ') "
              "          FROM post_departments pd JOIN departments d ON d.id = pd.department_id "
              "         WHERE pd.post_id = p.id), "
+             /* 마지막 식: 관리자가 마감일을 안 넣었고 AI 가 찾은 값이 있으면 1 (화면에 "AI 추정" 표시) */
              "       a.summary, a.tags, (p.deadline IS NULL AND a.deadline IS NOT NULL), "
              /* AI 요약이 없을 때 목록에 보여줄 본문 앞부분 (LEFT 는 글자 단위) */
              "       LEFT(REPLACE(REPLACE(p.body, '\\r', ''), '\\n', ' '), 160) "
@@ -122,10 +146,12 @@ static void handle_post_list(Request *req, Response *res)
                       "WHERE pd.post_id = p.id AND pd.department_id = %u)",
                 u.department_id);
 
+    /* 종류 필터는 허용 목록(화이트리스트)에 있는 값만 받는다 */
     if (strcmp(kind, "contest") == 0 || strcmp(kind, "hackathon") == 0 ||
         strcmp(kind, "etc") == 0)
         db_sqlf(&sql, " AND p.kind = %Q", kind);
 
+    /* 최신순, 최대 200개 (같은 시각이면 id 큰 것 먼저 - 정렬 결과를 항상 일정하게) */
     buf_puts(&sql, " ORDER BY p.created_at DESC, p.id DESC LIMIT 200");
 
     qr = db_query_buf(&sql);
@@ -139,7 +165,7 @@ static void handle_post_list(Request *req, Response *res)
     buf_puts(&b, "{\"posts\":[");
     while ((row = mysql_fetch_row(qr)) != NULL) {
         unsigned pid = (unsigned)strtoul(row[0], NULL, 10);
-        const char *why;
+        const char *why;   /* can_comment 의 사유 (목록에서는 쓰지 않음) */
 
         if (!first)
             buf_putc(&b, ',');
@@ -157,14 +183,15 @@ static void handle_post_list(Request *req, Response *res)
         json_kv_str(&b, "source_url", row[8][0] ? row[8] : NULL);     buf_putc(&b, ',');
         json_kv_str(&b, "author_nickname", row[9]);                   buf_putc(&b, ',');
         json_kv_int(&b, "comment_count", atoll(row[10]));             buf_putc(&b, ',');
-        json_kv_str(&b, "departments", row[11] ? row[11] : "");       buf_putc(&b, ',');
+        json_kv_str(&b, "departments", row[11] ? row[11] : "");       buf_putc(&b, ',');   /* GROUP_CONCAT 결과가 없으면 NULL */
         json_kv_str(&b, "summary", row[12]);                          buf_putc(&b, ',');
         /* tags 는 ai.c 가 json_write_str 로 만든 배열이라 그대로 싣는다. */
         buf_puts(&b, "\"tags\":");
         buf_puts(&b, row[13] && row[13][0] == '[' ? row[13] : "[]");  buf_putc(&b, ',');
         json_kv_bool(&b, "deadline_by_ai", row[14] && row[14][0] == '1'); buf_putc(&b, ',');
         json_kv_str(&b, "excerpt", row[15]);                          buf_putc(&b, ',');
-        /* 목록에서도 내가 댓글을 쓸 수 있는 글인지 바로 보여준다. */
+        /* 목록에서도 내가 댓글을 쓸 수 있는 글인지 바로 보여준다.
+         * (글마다 질의 2개가 더 나가지만 최대 200개라 감당할 만하다) */
         json_kv_bool(&b, "can_comment", can_comment(&u, pid, &why));
         buf_putc(&b, '}');
     }
@@ -177,6 +204,7 @@ static void handle_post_list(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 게시물 상세 */
 
+/* 게시물의 대상 학과 목록 [{"id":..,"name":..,"college_name":..}, ...] */
 static void write_post_departments(Buf *b, unsigned post_id)
 {
     Buf sql;
@@ -210,7 +238,9 @@ static void write_post_departments(Buf *b, unsigned post_id)
     buf_putc(b, ']');
 }
 
-/* AI 분석 결과. 아직 분석하지 않은 글이면 null. */
+/* AI 분석 결과. 아직 분석하지 않은 글이면 null.
+ * 형태: {"summary":..,"tags":[..],"host":..,"deadline":..,"model":..,"analyzed_at":..,
+ *        "departments":[{"id":..,"score":..,"reason":..}, ...]} */
 static void write_post_ai(Buf *b, unsigned post_id)
 {
     Buf sql;
@@ -218,6 +248,7 @@ static void write_post_ai(Buf *b, unsigned post_id)
     MYSQL_ROW row;
     int first = 1;
 
+    /* 1) 게시물 단위 분석 결과 */
     buf_init(&sql);
     db_sqlf(&sql,
             "SELECT summary, tags, IFNULL(host, ''), "
@@ -243,8 +274,9 @@ static void write_post_ai(Buf *b, unsigned post_id)
     json_kv_str(b, "deadline", row[3][0] ? row[3] : NULL);           buf_putc(b, ',');
     json_kv_str(b, "model", row[4]);                                 buf_putc(b, ',');
     json_kv_str(b, "analyzed_at", row[5]);                           buf_putc(b, ',');
-    mysql_free_result(qr);
+    mysql_free_result(qr);   /* row 를 다 쓴 뒤에 해제 (row 는 결과셋 메모리를 가리킨다) */
 
+    /* 2) 학과별 관련도 점수 (높은 순) */
     buf_init(&sql);
     db_sqlf(&sql,
             "SELECT d.id, d.name, c.name, ad.score, ad.reason "
@@ -274,11 +306,13 @@ static void write_post_ai(Buf *b, unsigned post_id)
     buf_puts(b, "]}");
 }
 
-/* 자체 모델이 고른 관련 학과 (점수 순 최대 5개) */
+/* 자체 모델이 고른 관련 학과 (점수 순 최대 5개)
+ * 25점 미만은 관련이 약하다고 보고 뺀다. prob 은 Platt 보정한 "맞을 확률",
+ * terms 는 점수의 근거가 된 키워드다 (ml.h 참고). */
 static void write_post_related(Buf *b, unsigned post_id)
 {
     MlHit hits[5];
-    int n = ml_rank_departments(post_id, 25, hits, 5, NULL);
+    int n = ml_rank_departments(post_id, 25, hits, 5, NULL);   /* 모델을 만들 수 없으면 -1 → 반복 없음 */
     int i, first = 1;
 
     buf_putc(b, '[');
@@ -287,13 +321,14 @@ static void write_post_related(Buf *b, unsigned post_id)
         MYSQL_RES *qr;
         MYSQL_ROW row;
 
+        /* 모델은 학과 id 만 주므로 이름은 DB 에서 찾는다 */
         buf_init(&sql);
         db_sqlf(&sql, "SELECT d.name, c.name FROM departments d "
                       "JOIN colleges c ON c.id = d.college_id WHERE d.id = %u", hits[i].id);
         qr = db_query_buf(&sql);
         buf_free(&sql);
         row = qr ? mysql_fetch_row(qr) : NULL;
-        if (row) {
+        if (row) {   /* 학습 후 학과가 삭제됐을 수도 있으므로 있는 것만 */
             if (!first)
                 buf_putc(b, ',');
             first = 0;
@@ -312,7 +347,8 @@ static void write_post_related(Buf *b, unsigned post_id)
     buf_putc(b, ']');
 }
 
-/* 이 공모전으로 팀원을 모집하는 글 (모집 중인 것 먼저) */
+/* 이 공모전으로 팀원을 모집하는 글 (모집 중인 것 먼저)
+ * ORDER BY r.status = 'closed' : 마감(1)이 모집 중(0)보다 뒤로 간다 */
 static void write_post_recruits(Buf *b, unsigned post_id)
 {
     Buf sql;
@@ -352,6 +388,7 @@ static void write_post_recruits(Buf *b, unsigned post_id)
     buf_putc(b, ']');
 }
 
+/* 게시물의 댓글 목록 (오래된 순). 탈퇴한 작성자는 "(탈퇴)" 로 표시 */
 static void write_comments(Buf *b, unsigned post_id)
 {
     Buf sql;
@@ -382,6 +419,7 @@ static void write_comments(Buf *b, unsigned post_id)
             json_kv_str(b, "created_at", row[2]);                      buf_putc(b, ',');
             json_kv_str(b, "author_nickname", row[3]);                 buf_putc(b, ',');
             json_kv_str(b, "author_department", row[4][0] ? row[4] : NULL); buf_putc(b, ',');
+            /* 프론트엔드가 "내 댓글이면 삭제 버튼 표시" 를 판단하는 데 쓴다 */
             json_kv_int(b, "author_id", atoll(row[5]));
             buf_putc(b, '}');
         }
@@ -390,6 +428,9 @@ static void write_comments(Buf *b, unsigned post_id)
     buf_putc(b, ']');
 }
 
+/* GET /api/posts/{id}
+ * 응답: {"post":{...,"departments":[..],"ai":{..}|null,"related_departments":[..],"recruits":[..]},
+ *        "comments":[..], "permission":{"can_comment":bool,"reason":"..."}} */
 static void handle_post_detail(Request *req, Response *res, unsigned post_id)
 {
     CurrentUser u;
@@ -432,6 +473,8 @@ static void handle_post_detail(Request *req, Response *res, unsigned post_id)
 
     allowed = can_comment(&u, post_id, &reason);
 
+    /* qr(첫 결과셋)을 열어 둔 채 아래 write_* 함수들이 다른 질의를 실행한다.
+     * mysql_store_result 로 결과를 이미 메모리에 받아 두었기 때문에 가능하다. */
     buf_init(&b);
     buf_puts(&b, "{\"post\":{");
     json_kv_int(&b, "id", atoll(row[0]));                            buf_putc(&b, ',');
@@ -441,7 +484,7 @@ static void handle_post_detail(Request *req, Response *res, unsigned post_id)
     json_kv_str(&b, "host", row[4][0] ? row[4] : NULL);              buf_putc(&b, ',');
     json_kv_str(&b, "deadline", row[5][0] ? row[5] : NULL);          buf_putc(&b, ',');
     json_kv_int(&b, "need_people", atoll(row[6]));                   buf_putc(&b, ',');
-    json_kv_int(&b, "view_count", atoll(row[7]) + 1);                buf_putc(&b, ',');
+    json_kv_int(&b, "view_count", atoll(row[7]) + 1);                buf_putc(&b, ',');   /* 방금 올린 1 을 반영 */
     json_kv_str(&b, "created_at", row[8]);                           buf_putc(&b, ',');
     json_kv_str(&b, "source_url", row[9][0] ? row[9] : NULL);        buf_putc(&b, ',');
     json_kv_str(&b, "author_nickname", row[10]);                     buf_putc(&b, ',');
@@ -468,6 +511,7 @@ static void handle_post_detail(Request *req, Response *res, unsigned post_id)
 
 /* -------------------------------------------------------------- 댓글 작성 */
 
+/* POST /api/posts/{id}/comments {"body":"..."} */
 static void handle_comment_create(Request *req, Response *res, unsigned post_id)
 {
     CurrentUser u;
@@ -480,6 +524,7 @@ static void handle_comment_create(Request *req, Response *res, unsigned post_id)
     if (!auth_require(req, res, &u))
         return;
 
+    /* 존재하지 않는 게시물에 댓글을 달 수 없게 먼저 확인 */
     buf_init(&sql);
     db_sqlf(&sql, "SELECT COUNT(*) FROM posts WHERE id = %u", post_id);
     exists = db_scalar(sql.data, 0);
@@ -501,13 +546,14 @@ static void handle_comment_create(Request *req, Response *res, unsigned post_id)
 
     body = json_str(in, "body", "");
     {
+        /* json_str 이 돌려준 문자열은 트리 소유라 직접 고칠 수 없으므로 복사본을 다듬는다 */
         char *trimmed = str_dup(body);
         if (!trimmed) {
             json_free(in);
             res_error(res, 500, "oom", "메모리가 부족합니다.");
             return;
         }
-        str_trim(trimmed);
+        str_trim(trimmed);   /* 공백만 있는 댓글을 빈 댓글로 판정하기 위해 */
 
         if (strlen(trimmed) == 0) {
             free(trimmed);
@@ -525,7 +571,7 @@ static void handle_comment_create(Request *req, Response *res, unsigned post_id)
         buf_init(&sql);
         db_sqlf(&sql,
                 "INSERT INTO comments (post_id, author_id, body) VALUES (%u, %u, %Q)",
-                post_id, u.id, trimmed);
+                post_id, u.id, trimmed);   /* 본문은 %Q 로 이스케이프 */
         if (!db_exec_buf(&sql)) {
             buf_free(&sql);
             free(trimmed);
@@ -541,7 +587,10 @@ static void handle_comment_create(Request *req, Response *res, unsigned post_id)
     res_json(res, 201, "{\"ok\":true}");
 }
 
-/* 작성자 본인 또는 관리자만 삭제할 수 있다. */
+/* 작성자 본인 또는 관리자만 삭제할 수 있다.
+ * DELETE /api/comments/{id}
+ * 일반 사용자는 WHERE 에 author_id 조건을 붙여, 남의 댓글이면 삭제되는 행이 0 이 된다.
+ * 그래서 "먼저 조회해 작성자 확인 → 삭제" 두 단계가 아니라 한 문장으로 권한 검사까지 끝난다. */
 static void handle_comment_delete(Request *req, Response *res, unsigned comment_id)
 {
     CurrentUser u;
@@ -564,6 +613,7 @@ static void handle_comment_delete(Request *req, Response *res, unsigned comment_
     }
     buf_free(&sql);
 
+    /* 지워진 행이 없으면: 남의 댓글이거나 이미 없는 댓글 */
     if (db_affected() == 0) {
         res_error(res, 403, "not_allowed", "본인 댓글만 삭제할 수 있습니다.");
         return;
@@ -571,9 +621,10 @@ static void handle_comment_delete(Request *req, Response *res, unsigned comment_
     res_json(res, 200, "{\"ok\":true}");
 }
 
+/* 게시물·댓글 경로 라우터 */
 int route_posts(Request *req, Response *res)
 {
-    unsigned id;
+    unsigned id;   /* 경로에서 꺼낸 숫자 id */
 
     if (req_is(req, "GET", "/api/posts")) {
         handle_post_list(req, res);

@@ -18,6 +18,13 @@
  *     --test-mail 주소   SMTP 설정(SKU_SMTP_*)으로 시험 메일을 한 통 보내고 종료
  *
  * AI 기능은 환경변수 ANTHROPIC_API_KEY 가 있을 때만 켜진다.
+ *
+ * 실행 순서 요약:
+ *   1) (--test-mail 이면 DB 없이 메일만 보내고 끝)
+ *   2) 기본 설정값 채우기 → 명령줄 인자로 덮어쓰기
+ *   3) DB 접속
+ *   4) 일회성 작업 모드(--add-admin / --crawl / --ai-analyze)면 그 작업만 하고 종료
+ *   5) 아니면 기초 데이터·기능 상태를 점검해 로그로 알리고 HTTP 서버를 띄운다(무한 대기)
  */
 #include "api.h"
 #include "db.h"
@@ -26,11 +33,12 @@
 #include "http.h"
 #include "mailer.h"
 
-#include <windows.h>
+#include <windows.h>   /* SetConsoleOutputCP */
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdlib.h>    /* getenv, atoi */
 #include <string.h>
 
+/* 도움말 출력 (--help 또는 잘못된 인자일 때) */
 static void usage(void)
 {
     printf(
@@ -55,18 +63,19 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-    DbConfig db;
-    unsigned short port = 80;
-    const char *webroot = "www";
-    const char *canonical_host = "www.sku14.com";
-    const char *env_pass;
-    int bind_all = 0;
-    int do_crawl = 0;
-    int do_ai = 0, ai_force = 0;
-    const char *admin_no = NULL, *admin_name = NULL, *admin_pw = NULL;
+    DbConfig db;                                  /* DB 접속 정보 */
+    unsigned short port = 80;                     /* HTTP 포트 (80 이면 주소에 포트를 안 써도 됨) */
+    const char *webroot = "www";                  /* index.html 등이 있는 폴더 */
+    const char *canonical_host = "www.sku14.com"; /* 대표 도메인 */
+    const char *env_pass;                         /* 환경변수 SKU_DB_PASS 값 */
+    int bind_all = 0;                             /* 1 이면 외부 접속 허용 */
+    int do_crawl = 0;                             /* --crawl 모드 */
+    int do_ai = 0, ai_force = 0;                  /* --ai-analyze 모드, --force 여부 */
+    const char *admin_no = NULL, *admin_name = NULL, *admin_pw = NULL;   /* --add-admin 인자 */
     int i;
 
-    /* 콘솔과 소스 파일 모두 UTF-8 이므로 출력 코드페이지를 맞춘다. */
+    /* 콘솔과 소스 파일 모두 UTF-8 이므로 출력 코드페이지를 맞춘다.
+     * (한국어 Windows 콘솔의 기본은 CP949 라서, 이것이 없으면 한글 로그가 깨져 보인다) */
     SetConsoleOutputCP(CP_UTF8);
 
     /* --test-mail: DB 없이 SMTP 설정만 시험한다. */
@@ -86,16 +95,21 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* 1) 기본값 */
     memset(&db, 0, sizeof db);
     str_copy(db.host, sizeof db.host, "127.0.0.1");
     db.port = 3306;
     str_copy(db.user, sizeof db.user, "root");
     str_copy(db.name, sizeof db.name, "sku_contest");
 
+    /* 비밀번호는 환경변수로 받는 것이 기본이다. 명령줄 인자는 작업 관리자 등에서
+     * 다른 사용자에게 보일 수 있고 셸 기록에도 남기 때문이다. */
     env_pass = getenv("SKU_DB_PASS");
     if (env_pass)
         str_copy(db.pass, sizeof db.pass, env_pass);
 
+    /* 2) 명령줄 인자 해석. 값을 받는 옵션은 "i + 1 < argc" 로 다음 인자가 있는지 먼저 확인하고,
+     *    argv[++i] 로 값을 읽으면서 인덱스를 한 칸 더 넘긴다. */
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
 
@@ -108,12 +122,12 @@ int main(int argc, char **argv)
             do_ai = 1;
         } else if (!strcmp(a, "--force")) {
             ai_force = 1;
-        } else if (!strcmp(a, "--add-admin") && i + 3 < argc) {
+        } else if (!strcmp(a, "--add-admin") && i + 3 < argc) {   /* 값 3개 필요 */
             admin_no   = argv[++i];
             admin_name = argv[++i];
             admin_pw   = argv[++i];
         } else if (!strcmp(a, "--port") && i + 1 < argc) {
-            port = (unsigned short)atoi(argv[++i]);
+            port = (unsigned short)atoi(argv[++i]);   /* 숫자가 아니면 0 → 아래에서 거부 */
         } else if (!strcmp(a, "--bind-all")) {
             bind_all = 1;
         } else if (!strcmp(a, "--host") && i + 1 < argc) {
@@ -131,9 +145,10 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--webroot") && i + 1 < argc) {
             webroot = argv[++i];
         } else {
+            /* 모르는 옵션이거나 값이 빠진 옵션 */
             log_err("알 수 없는 인자: %s", a);
             usage();
-            return 2;
+            return 2;   /* 종료 코드 2 = 사용법 오류 (관례) */
         }
     }
 
@@ -142,8 +157,11 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    /* 3) DB 접속 - 아래 모든 모드가 DB 를 필요로 한다 */
     if (!db_init(&db))
         return 1;
+
+    /* 4) 일회성 작업 모드들 */
 
     /* --add-admin: 계정만 만들고 종료 */
     if (admin_no) {
@@ -155,6 +173,7 @@ int main(int argc, char **argv)
     /* --crawl: 공지 수집만 하고 종료 (작업 스케줄러에 걸어 쓸 수 있다) */
     if (do_crawl) {
         CrawlResult cr;
+        /* 수집 기간(일)은 DB 설정값을 쓰고, 설정이 없으면 730일(약 2년) */
         int window = (int)db_scalar(
             "SELECT CAST(v AS SIGNED) FROM app_config WHERE k = 'crawl.window_days'", 730);
         int ok = crawl_notices(window, &cr);
@@ -169,18 +188,21 @@ int main(int argc, char **argv)
     if (do_ai) {
         int failed = ai_run_sync(ai_force);
         db_close();
-        return failed == 0 ? 0 : 1;
+        return failed == 0 ? 0 : 1;   /* 하나라도 실패하면 종료 코드 1 */
     }
 
+    /* 5) 웹 서버 모드 */
     api_set_webroot(webroot);
     api_set_canonical_host(canonical_host, port);
 
-    /* 서버를 띄우기 전에 기초 데이터가 들어있는지 확인한다. */
+    /* 서버를 띄우기 전에 기초 데이터가 들어있는지 확인한다.
+     * (없어도 서버는 뜨지만 회원가입·관리가 안 되므로 경고로 알려 준다) */
     if (db_scalar("SELECT COUNT(*) FROM departments", 0) == 0)
         log_warn("학과 데이터가 비어 있습니다. sql/02_seed_departments.sql 을 먼저 적용하세요.");
     if (db_scalar("SELECT COUNT(*) FROM users WHERE role = 'admin'", 0) == 0)
         log_warn("관리자 계정이 없습니다. server.exe --add-admin <학번> <이름> <비밀번호>");
 
+    /* 선택 기능들의 켜짐/꺼짐 상태를 로그로 알린다 */
     if (ai_enabled())
         log_info("AI 분석·추천 켜짐 (%s)", AI_MODEL);
     else
@@ -199,6 +221,7 @@ int main(int argc, char **argv)
     else
         log_info("접속 주소: http://%s:%u/", canonical_host, port);
 
+    /* HTTP 서버 실행. 정상이라면 여기서 영원히 머문다(돌아오면 시작 실패). */
     if (!http_serve(port, bind_all, api_dispatch)) {
         db_close();
         return 1;

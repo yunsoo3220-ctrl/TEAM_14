@@ -1,13 +1,19 @@
 ﻿# smtp.env (KEY=VALUE 줄) 를 읽어 현재 프로세스 환경변수로 올린다. 다른 스크립트에서 . 으로 불러 쓴다.
 #   . (Join-Path $PSScriptRoot 'smtp-env.ps1'); Import-SmtpEnv $Project
 
+# 반환값: SMTP 설정이 완전하면 $true, 아니면 $false
+# smtp.env 예:
+#   SKU_SMTP_URL=smtps://smtp.gmail.com:465
+#   SKU_SMTP_USER=me@gmail.com
 function Import-SmtpEnv([string]$Project) {
     $file = Join-Path $Project 'smtp.env'
+    # 이전에 남아 있던 값부터 지운다 (파일에서 지운 설정이 환경변수에 남아 쓰이지 않게)
     foreach ($k in 'SKU_SMTP_URL', 'SKU_SMTP_USER', 'SKU_SMTP_PASS', 'SKU_SMTP_FROM') {
         Remove-Item -Path "env:$k" -ErrorAction SilentlyContinue
     }
     if (-not (Test-Path $file)) { return $false }
     foreach ($line in Get-Content -LiteralPath $file -Encoding UTF8) {
+        # 한 줄씩: 앞뒤 공백 제거 → 빈 줄과 # 주석 줄은 건너뜀 → 첫 '=' 기준으로 키와 값을 나눔
         $t = $line.Trim()
         if (-not $t -or $t.StartsWith('#')) { continue }
         $i = $t.IndexOf('=')
@@ -18,6 +24,7 @@ function Import-SmtpEnv([string]$Project) {
         if ($v -match '보내는계정|앱비밀번호|아이디@') { continue }
         # Google 앱 비밀번호는 'abcd efgh ijkl mnop' 처럼 띄어 보여 주므로 공백을 뺀다.
         if ($k -eq 'SKU_SMTP_PASS') { $v = $v -replace '\s', '' }
+        # 허용한 키만 환경변수로 올린다 (env: 드라이브에 Set-Item = 현재 프로세스와 그 자식 프로세스의 환경변수)
         if ($k -like 'SKU_SMTP_*' -or $k -eq 'SKU_MAIL_DEV') {
             Set-Item -Path "env:$k" -Value $v
         }

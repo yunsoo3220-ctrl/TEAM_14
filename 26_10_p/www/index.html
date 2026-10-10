@@ -1,9 +1,28 @@
 <!doctype html>
+<!--
+  SKU14 공모전 팀원 모집 커뮤니티 - 유일한 HTML 페이지 (단일 페이지 앱)
+
+  구성
+    1) <aside class="sidebar">   왼쪽 메뉴 (좁은 화면에서는 햄버거 버튼으로 연다)
+    2) <div class="shell">       상단바 + 히어로(인사 영역) + 본문(#view) + 바닥글
+    3) <template id="tpl-...">   화면 조각들. 브라우저는 template 안의 내용을 그리지 않으며,
+                                 app.js 가 복제(cloneNode)해서 #view 에 넣는다.
+    4) #toast, app.js            알림 상자와 동작 스크립트
+
+  data-* 속성 규칙
+    data-xxx 는 app.js 가 요소를 찾을 때 쓰는 손잡이다 (예: root.querySelector('[data-list]')).
+    CSS 클래스는 모양, data-* 는 동작으로 역할을 나눠, 디자인을 바꿔도 스크립트가 깨지지 않게 한다.
+
+  메뉴 주소는 모두 # 로 시작한다 (#/posts). # 뒤는 서버로 가지 않고 app.js 의 route() 가 처리한다.
+-->
 <html lang="ko">
 <head>
+<!-- 문자 인코딩. 한글이 깨지지 않도록 가장 먼저 둔다 -->
 <meta charset="utf-8">
+<!-- 휴대폰에서 화면 폭에 맞춰 보이게 (없으면 PC 화면을 축소해서 보여 준다) -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SKU14 · 공모전 팀원 모집</title>
+<!-- 웹 글꼴 Pretendard. preconnect 로 글꼴 서버와 미리 연결해 첫 표시를 빠르게 한다 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
 <link rel="stylesheet" href="/style.css">
@@ -13,6 +32,10 @@
 <!-- 좁은 화면에서 사이드바를 열었을 때 뒤를 덮는 막 -->
 <div class="scrim" id="scrim" hidden></div>
 
+<!-- ────────────────────────────────────────────── 사이드바 (메뉴)
+     data-nav 값은 app.js 의 markNav() 가 현재 메뉴를 강조할 때 쓴다.
+     관리자·내 프로필 메뉴는 hidden 으로 시작해 로그인 상태에 따라 app.js 가 보인다.
+     svg 아이콘은 aria-hidden 으로 화면 낭독기가 읽지 않게 한다. -->
 <aside class="sidebar" id="sidebar">
   <a class="logo" href="#/posts">
     <span class="logo-mark">SKU<b>14</b></span>
@@ -83,7 +106,9 @@
   </div>
 </aside>
 
+<!-- ────────────────────────────────────────────── 화면 본체 -->
 <div class="shell">
+  <!-- 상단바: 햄버거(좁은 화면용), 현재 화면 제목, 오른쪽 로그인 정보(#who 는 app.js 가 채움) -->
   <header class="topbar">
     <button class="hamburger" id="hamburger" aria-label="메뉴 열기">
       <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
@@ -92,8 +117,10 @@
     <div class="topbar-right" id="who"></div>
   </header>
 
+  <!-- 히어로: 인사·소속 표시 영역 (목록 화면에서만 보인다, app.js 의 paintHero) -->
   <section class="hero" id="hero"></section>
 
+  <!-- 본문: 화면이 바뀔 때마다 app.js 의 render() 가 내용을 통째로 바꾼다 -->
   <main id="view"></main>
 
   <footer class="pagefoot">
@@ -102,7 +129,8 @@
   </footer>
 </div>
 
-<!-- ────────────────────────────────────────────── 게시판 목록 -->
+<!-- ────────────────────────────────────────────── 게시판 목록
+     #/posts, #/mine (app.js 의 viewList). 요약 타일 → 추천 영역 → 필터 → 목록 순서 -->
 <template id="tpl-list">
   <div class="stack">
     <div class="tiles" data-tiles></div>
@@ -143,7 +171,8 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── AI 추천 -->
+<!-- ────────────────────────────────────────────── AI 추천
+     #/reco/{학과} (viewReco). 학과를 고르면 자체 모델의 관련 공모전을 구간(매우 관련/관련/참고)별로 -->
 <template id="tpl-reco">
   <div class="stack">
     <section class="reco reco-page">
@@ -178,7 +207,9 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 게시물 상세 -->
+<!-- ────────────────────────────────────────────── 게시물 상세
+     #/posts/{id} (viewDetail). 본문 · 대상 학과 · 자체 모델 관련 학과 · Claude 분석 · 모집글 · 댓글
+     hidden 으로 시작하는 카드(data-ml, data-ai)는 데이터가 있을 때만 app.js 가 보인다 -->
 <template id="tpl-detail">
   <div class="stack">
     <a class="back" href="#/posts">← 목록으로</a>
@@ -252,7 +283,8 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 팀원 모집 게시판 -->
+<!-- ────────────────────────────────────────────── 팀원 모집 게시판
+     tpl-recruits: 목록 (#/recruits), tpl-recruit-new: 글쓰기 (#/recruits/new), tpl-recruit: 상세 (#/recruits/{id}) -->
 <template id="tpl-recruits">
   <div class="stack">
     <section class="card">
@@ -341,7 +373,8 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 팀원 찾기 / 내 프로필 -->
+<!-- ────────────────────────────────────────────── 팀원 찾기 / 내 프로필
+     tpl-people: 나와 비슷한 회원 (#/people), tpl-me: 관심 키워드·자기소개 편집 (#/me) -->
 <template id="tpl-people">
   <div class="stack">
     <section class="reco">
@@ -359,7 +392,8 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── AI 구조 소개 -->
+<!-- ────────────────────────────────────────────── AI 구조 소개
+     #/ai (viewAi). 설명은 고정 글이고, data-s="..." 자리에만 현재 모델 상태 숫자가 채워진다 -->
 <template id="tpl-ai">
   <div class="stack aiarch">
     <section class="reco">
@@ -542,7 +576,8 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 로그인 / 가입 -->
+<!-- ────────────────────────────────────────────── 로그인 / 가입
+     #/login, #/register (viewAuth). 두 카드가 한 템플릿에 있고 하나만 보인다 -->
 <template id="tpl-auth">
   <div class="auth-wrap">
     <!-- 로그인: 처음에 보이는 화면 -->
@@ -619,7 +654,8 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 관리자 -->
+<!-- ────────────────────────────────────────────── 관리자
+     #/admin (viewAdmin). 요약 → AI 분석 상태 → 공지 수집 → 새 게시물 쓰기(+ 실시간 학과 예측) -->
 <template id="tpl-admin">
   <div class="stack">
     <div class="tiles" data-summary></div>
@@ -702,8 +738,10 @@
   </div>
 </template>
 
+<!-- 잠깐 떴다 사라지는 알림 (app.js 의 toast) -->
 <div id="toast" class="toast" hidden></div>
 
+<!-- 스크립트는 body 맨 끝에 둔다: 위의 요소들이 모두 만들어진 뒤에 실행되어야 getElementById 가 찾을 수 있다 -->
 <script src="/app.js"></script>
 </body>
 </html>

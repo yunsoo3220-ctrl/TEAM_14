@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS interest_tags (
   UNIQUE KEY uq_interest_tags_name (name)
 ) ENGINE=InnoDB;
 
+-- 회원 ↔ 키워드 다대다 연결 표. 회원이나 키워드가 지워지면 연결도 함께 지워진다.
 CREATE TABLE IF NOT EXISTS user_interests (
   user_id INT UNSIGNED NOT NULL,
   tag_id  INT UNSIGNED NOT NULL,
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS recruit_tags (
   CONSTRAINT fk_rt_tag     FOREIGN KEY (tag_id)     REFERENCES interest_tags (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 모집글 댓글. 모집글이나 작성자가 지워지면 함께 지워진다.
 CREATE TABLE IF NOT EXISTS recruit_comments (
   id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
   recruit_id INT UNSIGNED  NOT NULL,

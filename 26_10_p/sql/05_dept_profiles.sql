@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS dept_profiles (
     FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 학과 이름 → 키워드 대응표를 UNION ALL 로 만든 임시 표(p)와 departments 를 이름으로 조인해,
+-- 학과 id 를 몰라도 이름만으로 프로필을 넣는다. 이미 있으면 keywords 를 덮어쓴다.
+-- 키워드는 공백으로 구분하며, 모델이 토큰화할 때 낱말 단위로 쪼갠다 (src/ml.c 의 tokenize).
 INSERT INTO dept_profiles (department_id, keywords)
 SELECT d.id, p.keywords
 FROM departments d
@@ -74,5 +77,5 @@ JOIN (
          '스포츠 체육 운동 건강 헬스케어 웨어러블 스포츠데이터 피트니스 재활 레저 e스포츠 경기 트레이닝 웰니스 안전'
   UNION ALL SELECT '자유전공학부',
          '아이디어 기획 창의 융합 사회문제 문제해결 탐구 에세이 논문 체험수기 수기 글쓰기 인문 인문가치 토론 진로 스터디 학습 리더십'
-) p ON p.name = d.name
+) p ON p.name = d.name                    -- 이름이 DB 의 학과 이름과 정확히 같아야 들어간다
 ON DUPLICATE KEY UPDATE keywords = VALUES(keywords);

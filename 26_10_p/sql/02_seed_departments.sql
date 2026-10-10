@@ -6,12 +6,16 @@
 
 USE sku_contest;
 
+-- 기존 데이터를 비우고 새로 넣는다.
+-- TRUNCATE 는 외래 키가 걸린 표에서 거부되므로 잠시 외래 키 검사를 끈다.
+-- (주의: post_departments 도 비워지므로 게시물의 대상 학과 체크가 모두 사라진다)
 SET FOREIGN_KEY_CHECKS = 0;
 TRUNCATE TABLE post_departments;
 TRUNCATE TABLE departments;
 TRUNCATE TABLE colleges;
-SET FOREIGN_KEY_CHECKS = 1;
+SET FOREIGN_KEY_CHECKS = 1;   -- 반드시 다시 켠다
 
+-- 단과대학: id 를 직접 지정해 아래 학과의 college_id 와 맞춘다. sort 는 10 단위로 두어 사이에 끼워 넣기 쉽게.
 INSERT INTO colleges (id, name, slug, sort) VALUES
   (1, '인문사회과학대학', 'college-of-humanities-and-social-science',  10),
   (2, '이공대학',         'college-of-natural-science-and-engineering', 20),
@@ -22,6 +26,7 @@ INSERT INTO colleges (id, name, slug, sort) VALUES
   (7, '융합대학',         'college-of-multidisciplinary-studies',        70),
   (8, '창의인재대학',     'college-of-creative-talents',                80);
 
+-- 학과: id 는 AUTO_INCREMENT 로 자동 부여. (college_id, 학과 이름, 단과대학 안의 표시 순서)
 INSERT INTO departments (college_id, name, sort) VALUES
   -- 인문사회과학대학
   (1, '글로벌비즈니스어학부', 10),
@@ -59,6 +64,7 @@ INSERT INTO departments (college_id, name, sort) VALUES
   -- 창의인재대학
   (8, '자유전공학부',         10);
 
+-- 서버 설정 기본값. 이미 있으면 값을 덮어쓴다 (ON DUPLICATE KEY UPDATE).
 INSERT INTO app_config (k, v) VALUES
   ('crawl.window_days', '730'),         -- 공지 수집 범위: 약 2년 (추천 모델 학습 데이터)
   ('crawl.fetched_at',  '')

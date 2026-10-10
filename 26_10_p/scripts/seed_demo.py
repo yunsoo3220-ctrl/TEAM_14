@@ -11,21 +11,24 @@
 비밀번호는 demo1234! 이다. 지우려면 scripts/cleanup_demo.sql 을 실행한다.
 """
 
+# 표준 라이브러리만 쓴다 (requests 같은 외부 패키지 없이 어느 PC 에서나 돌게)
 import argparse
-import http.cookiejar
+import http.cookiejar     # 로그인 세션 쿠키(sid)를 요청 사이에 보관
 import json
 import random
 import sys
 import urllib.error
-import urllib.request
+import urllib.request     # HTTP 요청
 
-PASSWORD = "demo1234!"
-STUDENT_PREFIX = "2099"
+PASSWORD = "demo1234!"       # 모든 가상 계정의 비밀번호
+STUDENT_PREFIX = "2099"      # 가상 학번 접두어 (cleanup_demo.sql 이 이 접두어로 지운다)
 
+# 가상 이름 재료: list("김이박...") 은 문자열을 한 글자씩 쪼갠 리스트가 된다
 SURNAMES = list("김이박최정강조윤장임한오서신권황안송류홍전고문양손배백허유남심노하곽성차주우구민진나")
 GIVEN = list("민서지윤도현하준유진수아예은시우재원승민서연지호다은태윤가은채원준혁은우소윤건우나연")
 
 # 학과별 성향: (관심 분야 후보, 역할 후보, 해 본 활동, 찾는 팀)
+# 키는 DB 의 학과 이름과 정확히 같아야 한다. 값의 키워드는 interest_tags 의 이름과 맞아야 태그로 들어간다.
 PERSONAS = {
     "글로벌비즈니스어학부": (["글로벌", "마케팅", "글쓰기", "기획"], ["자료조사", "발표", "작가"],
                       ["교환학생 프로그램에 다녀왔고 통번역 봉사를 했습니다", "영어 발표 대회에 나간 적이 있습니다"],
@@ -103,9 +106,11 @@ PERSONAS = {
                ["인문학 에세이 공모전에 글을 냈습니다", "교내 사진 동아리에서 활동합니다"],
                ["에세이·체험수기 공모전", "사진 공모전"]),
 }
+# 협업 성향 키워드 후보 (interest_tags 의 style 분류)
 STYLES = ["꼼꼼함", "아이디어형", "실행력", "소통중시", "마감준수", "수상목표", "경험쌓기", "온라인협업", "대면모임"]
 
 # (공모전 제목에 들어 있는 말, 모집글 제목, 찾는 키워드, 본문)
+# 첫 번째 값으로 실제 게시물 제목을 찾아 모집글을 그 공모전에 연결한다 (못 찾으면 연결 없이).
 RECRUITS = [
     ("문화다양성 AI 영상", "AI 영상 콘텐츠 공모전 같이 나갈 편집자·기획자 구해요",
      ["영상", "AI", "영상편집", "기획자"],
@@ -151,6 +156,7 @@ RECRUITS = [
      "특허 데이터를 분석해서 산업 아이디어를 내는 공모전입니다. 파이썬이나 엑셀로 분석 가능하신 분 찾아요."),
 ]
 
+# 모집글에 달 댓글 후보
 COMMENTS = [
     "관심 있어요! 편집은 프리미어로 2년 정도 해 봤습니다.",
     "아직 자리 남았나요? 기획 쪽으로 참여하고 싶습니다.",
@@ -164,12 +170,14 @@ COMMENTS = [
 
 
 class Client:
+    # 쿠키를 기억하는 작은 HTTP 클라이언트. 회원마다 하나씩 만들어 각자 로그인 상태를 유지한다.
     def __init__(self, base):
         self.base = base.rstrip("/")
         self.jar = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
 
     def call(self, method, path, body=None):
+        # JSON 요청을 보내고 (상태 코드, 파싱한 JSON) 을 돌려준다. 4xx/5xx 도 예외 대신 값으로 돌려준다.
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, method=method,
                                      headers={"Content-Type": "application/json"} if data else {})
@@ -177,6 +185,7 @@ class Client:
             with self.opener.open(req, timeout=30) as r:
                 return r.status, json.loads(r.read().decode("utf-8") or "null")
         except urllib.error.HTTPError as e:
+            # urllib 은 200번대가 아니면 예외를 던지므로 여기서 본문(오류 JSON)을 읽어 돌려준다
             try:
                 return e.code, json.loads(e.read().decode("utf-8"))
             except Exception:
@@ -189,8 +198,9 @@ def main():
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--seed", type=int, default=14)
     args = ap.parse_args()
-    rnd = random.Random(args.seed)
+    rnd = random.Random(args.seed)   # 시드를 고정하면 몇 번 돌려도 같은 가상 데이터가 나온다
 
+    # 로그인하지 않은 클라이언트로 기초 정보(학과, 키워드, 게시물)를 읽는다
     anon = Client(args.base)
     st, depts = anon.call("GET", "/api/departments")
     st2, tags = anon.call("GET", "/api/tags")
@@ -198,14 +208,15 @@ def main():
     if st != 200 or st2 != 200 or st3 != 200:
         sys.exit("서버에 연결할 수 없습니다. 서버를 먼저 띄우세요.")
 
-    dept_list = [d for c in depts["colleges"] for d in c["departments"]]
-    tag_id = {t["name"]: t["id"] for g in tags["groups"] for t in g["tags"]}
+    dept_list = [d for c in depts["colleges"] for d in c["departments"]]       # 단과대학 구조를 펼친 학과 목록
+    tag_id = {t["name"]: t["id"] for g in tags["groups"] for t in g["tags"]}  # 키워드 이름 → id
 
     # ---------------------------------------------------------------- 회원
     users = []          # (student_no, dept_name)
     made = skipped = 0
     used_phones = set()
     for i in range(1, args.count + 1):
+        # 처음에는 학과를 차례로 한 명씩 채우고(모든 학과에 최소 1명), 그 뒤로는 무작위
         dept = dept_list[(i - 1) % len(dept_list)] if i <= len(dept_list) else rnd.choice(dept_list)
         fields, roles, acts, wants = PERSONAS.get(dept["name"], (["기획"], ["자료조사"], ["다양한 활동"], ["공모전"]))
         chosen = rnd.sample(fields, k=min(len(fields), rnd.choice([2, 3])))
@@ -213,8 +224,9 @@ def main():
             chosen.append(rnd.choice(["영상", "기획", "디자인", "데이터", "사회문제", "마케팅", "글쓰기"]))
         chosen += rnd.sample(roles, k=1)
         chosen += rnd.sample(STYLES, k=rnd.choice([1, 2]))
-        chosen = list(dict.fromkeys(chosen))[:8]
+        chosen = list(dict.fromkeys(chosen))[:8]   # 순서를 지키며 중복 제거 + 서버 제한(8개)에 맞춤
 
+        # 표시 이름이 "이름_전화가운데" 라 겹치지 않도록 전화번호를 중복 없이 뽑는다
         while True:
             phone = f"010-{rnd.randint(2000, 9899)}-{rnd.randint(1000, 9999)}"
             if phone not in used_phones:
@@ -224,7 +236,7 @@ def main():
         grade = rnd.randint(1, 4)
         bio = (f"{dept['name']} {grade}학년입니다. {rnd.choice(acts)}. "
                f"{rnd.choice(wants)}에 같이 나갈 팀을 찾고 있어요.")
-        student_no = f"{STUDENT_PREFIX}{i:06d}"
+        student_no = f"{STUDENT_PREFIX}{i:06d}"   # 예: 2099000001 (6자리로 0 채움)
 
         st, out = anon.call("POST", "/api/register", {
             "student_no": student_no, "name": name, "phone": phone, "password": PASSWORD,
@@ -233,7 +245,7 @@ def main():
         })
         if st == 201:
             made += 1
-        elif st == 409:
+        elif st == 409:          # 이미 가입된 학번 (다시 돌린 경우)
             skipped += 1
         else:
             print("가입 실패", student_no, st, out)
@@ -244,7 +256,7 @@ def main():
     # ---------------------------------------------------------------- 모집글
     st, existing = anon.call("GET", "/api/recruits?status=all")
     have = {r["title"] for r in existing.get("recruits", [])} if st == 200 else set()
-    sessions = {}
+    sessions = {}   # 학번 → 로그인한 Client (같은 사람은 한 번만 로그인)
 
     def login(student_no):
         if student_no not in sessions:
@@ -257,8 +269,8 @@ def main():
     for k, (needle, title, want, body) in enumerate(RECRUITS):
         if title in have:
             continue
-        post = next((p for p in posts["posts"] if needle in p["title"]), None)
-        author = users[(k * 3) % len(users)] if users else None
+        post = next((p for p in posts["posts"] if needle in p["title"]), None)   # 제목에 needle 이 든 첫 게시물
+        author = users[(k * 3) % len(users)] if users else None                # 작성자를 골고루 나눠 맡긴다
         c = login(author) if author else None
         if not c:
             continue
@@ -276,7 +288,7 @@ def main():
     # ---------------------------------------------------------------- 댓글
     n_comments = 0
     for rid, author in created:
-        others = [u for u in users if u != author]
+        others = [u for u in users if u != author]   # 작성자 본인은 댓글을 달지 않게
         for who in rnd.sample(others, k=min(len(others), rnd.choice([1, 2, 3]))):
             c = login(who)
             if c and c.call("POST", f"/api/recruits/{rid}/comments",

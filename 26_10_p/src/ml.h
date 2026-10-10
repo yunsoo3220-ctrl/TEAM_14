@@ -2,12 +2,22 @@
  *
  * 1. 토큰화: 한국어는 형태소 분석기 없이 낱말 + 한글 두 글자 묶음(bigram)으로,
  *    영문·숫자는 소문자 낱말로 나눈다. 흔한 공지 상투어는 불용어로 뺀다.
+ *      예: "인공지능 공모전" → ["인공지능", "인공", "공지", "지능", ...]
+ *      bigram 을 쓰면 "인공지능을" / "인공지능은" 처럼 조사가 붙어도 공통 조각이 남아 매칭된다.
  * 2. 문서 벡터: 게시물(제목 가중 2배 + 본문)과 학과 프로필을 TF-IDF 로 만든다.
+ *      TF  = 그 문서 안에서 낱말이 나온 횟수 (자주 나올수록 중요)
+ *      IDF = log(전체 문서 수 / 그 낱말이 나온 문서 수) (모든 문서에 나오는 흔한 낱말은 가치가 낮음)
+ *      가중치 = TF x IDF.  문서 하나 = (낱말 → 가중치) 사전 = 희소 벡터
  * 3. 학습(Rocchio): 학과 벡터 = 프로필 벡터 + 0.75 x (그 학과에 연결된 게시물 벡터 평균).
  *    연결 = 관리자가 대상 학과로 체크한 글(가중 1.0), 그 학과 학생이 댓글을 단 글(0.5).
+ *      Rocchio 는 정보검색에서 쓰는 고전적 피드백 기법으로, "정답으로 표시된 문서 쪽으로
+ *      질의 벡터를 끌어당긴다". 여기서는 학과 설명(프로필)을 실제 관련 게시물 쪽으로 보정한다.
  * 4. 추론: 게시물-학과 코사인 유사도. 점수(0~100)는 데이터에 맞춰 보정한다
  *    (게시물별 최고 유사도의 90% 지점이 80점이 되도록).
+ *      코사인 유사도 = (A·B) / (|A||B|), 두 벡터 방향이 같을수록 1 에 가깝다.
+ *      원시 유사도는 0.05~0.3 처럼 작고 데이터마다 범위가 달라 그대로 보여 주면 이해하기 어렵다.
  * 5. 설명: 두 벡터에서 기여가 큰 낱말을 근거 키워드로 돌려준다.
+ *      (내적의 항 a_i x b_i 가 큰 낱말 = 유사도에 가장 크게 기여한 낱말)
  * 6. 딥러닝 임베딩 (embed.h): 임베딩 서비스가 떠 있으면 사전학습 트랜스포머로 만든 문장
  *    벡터에도 같은 Rocchio 를 적용하고, 유사도 = 0.7 x 임베딩 + 0.3 x TF-IDF 로 합친다.
  *    글자가 겹치지 않아도 뜻이 가까우면 찾는다. 서비스가 없으면 TF-IDF 만 쓴다.
@@ -16,44 +26,50 @@
  *    a, b 는 정답 쌍(관리자 체크·댓글·♥)을 양성, 그 글의 나머지 학과를 음성으로 두고
  *    로지스틱 회귀로 맞춘다. 정답이 적을 때 흔들리지 않게 데이터 분포에서 정한 사전값
  *    (평범한 쌍 5%, 상위 10% 쌍 70%) 쪽으로 당긴다 (MAP 추정). 정답이 쌓일수록 데이터가 이긴다.
+ *      MAP(최대 사후 확률) 추정 = 데이터 가능도 x 사전 분포 를 최대화.
+ *      데이터가 적으면 사전값이 결과를 지배하고, 많아지면 데이터가 결과를 지배한다.
  *
  * 게시물·라벨·프로필이 바뀌거나 임베딩 서비스가 새로 뜨면 다음 요청 때 자동으로 다시 학습한다.
  * ml_predict_departments 는 다시 학습하지 않고 지금 모델로 아직 저장하지 않은 글을 바로 매긴다. */
 #ifndef SKU_ML_H
 #define SKU_ML_H
 
-#define ML_MAX_TERMS 4
+#define ML_MAX_TERMS 4   /* 결과 하나당 돌려주는 근거 키워드 최대 개수 */
 
+/* 순위 결과 한 건 (게시물 또는 학과 또는 사용자) */
 typedef struct {
     unsigned id;                         /* 게시물 또는 학과 번호 */
     int      score;                      /* 0 ~ 100 */
     double   prob;                       /* 게시물-학과: 맞을 확률 0 ~ 1 (그 밖에는 0) */
-    int      nterms;
+    int      nterms;                     /* terms 에 실제로 담긴 키워드 수 */
     char     terms[ML_MAX_TERMS][40];    /* 근거 키워드 */
 } MlHit;
 
+/* 현재 학습된 모델의 상태 (관리자 화면의 "모델 정보" 에 표시) */
 typedef struct {
     int    posts;          /* 학습에 쓴 게시물 수 */
-    int    departments;
+    int    departments;    /* 학과 수 */
     int    labels;         /* (학과, 게시물) 연결 수 */
     double tau;            /* 점수 보정값 */
-    char   trained_at[32];
+    char   trained_at[32]; /* 마지막 학습 시각 */
     int    dim;            /* 임베딩 차원 (0 = 임베딩 없이 TF-IDF 만) */
-    char   embed_model[128];
+    char   embed_model[128]; /* 임베딩 모델 이름 */
     double pa, pb;         /* 확률 보정: P = 1 / (1 + e^-(pa * s + pb)) */
     int    positives;      /* 확률 보정에 쓴 양성 쌍 수 */
     int    negatives;      /* 음성 쌍 수 */
 } MlInfo;
 
 /* 학과와 관련 있는 게시물을 점수 순으로 담는다. min_score 미만은 뺀다.
- * 담은 개수, 모델을 만들 수 없으면 -1. info 는 NULL 이어도 된다. */
+ * 담은 개수, 모델을 만들 수 없으면 -1. info 는 NULL 이어도 된다.
+ *   out/max : 결과를 담을 배열과 그 크기 */
 int ml_rank_posts(unsigned department_id, int min_score, MlHit *out, int max, MlInfo *info);
 
-/* 게시물과 관련 있는 학과를 점수 순으로 담는다. */
+/* 게시물과 관련 있는 학과를 점수 순으로 담는다. (인자 의미는 ml_rank_posts 와 같음) */
 int ml_rank_departments(unsigned post_id, int min_score, MlHit *out, int max, MlInfo *info);
 
 /* 아직 저장하지 않은 글(제목·본문)이 학과마다 맞을 확률을 지금 모델로 계산한다 (재학습 없음).
- * 확률 높은 순으로 max 개까지 담고 개수를 돌려준다. 모델을 만들 수 없으면 -1. */
+ * 확률 높은 순으로 max 개까지 담고 개수를 돌려준다. 모델을 만들 수 없으면 -1.
+ * 관리자가 새 게시물을 작성하는 중에 "추천 대상 학과" 를 미리 보여 주는 데 쓴다. */
 int ml_predict_departments(const char *title, const char *body, MlHit *out, int max, MlInfo *info);
 
 /* 강제로 다시 학습한다. 성공 시 1. */
@@ -64,7 +80,8 @@ int ml_retrain(MlInfo *info);
 int ml_rank_posts_personal(unsigned department_id, const char *profile_text, int min_score,
                            MlHit *out, int max, MlInfo *info);
 
-/* 관심 키워드·자기소개가 비슷한 다른 학생을 점수 순으로. 근거는 겹친 키워드·낱말. */
+/* 관심 키워드·자기소개가 비슷한 다른 학생을 점수 순으로. 근거는 겹친 키워드·낱말.
+ * (팀원 찾기 기능: "나와 관심사가 비슷한 학생") */
 int ml_match_users(unsigned user_id, int min_score, MlHit *out, int max);
 
 /* 모집글마다 나와 맞는 정도를 매긴다 (out[i].id = recruit_ids[i]).
@@ -75,4 +92,4 @@ int ml_score_recruits(unsigned user_id, const unsigned *recruit_ids, int n, MlHi
 #include "common.h"
 void ml_write_terms(Buf *b, const MlHit *h);
 
-#endif
+#endif /* SKU_ML_H */
