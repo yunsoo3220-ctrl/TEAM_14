@@ -73,7 +73,7 @@ MYSQL_USER ?= root
 # MYSQL_PW 가 있으면 -p비밀번호, 없으면 -p 만 (mysql 이 비밀번호를 물어본다)
 PW_ARG     := $(if $(MYSQL_PW),-p$(MYSQL_PW),-p)
 
-# 스키마(01) → 학과(02) → 학과 프로필(05) → 관심 키워드(07) 순서로 적용 (03,04,06,08~11 은 기존 DB 갱신용이라 새로 만들 때는 필요 없음)
+# 스키마(01) → 학과(02) → 학과 프로필(05) → 관심 키워드(07) 순서로 적용 (03,04,06,08~12 는 기존 DB 갱신용이라 새로 만들 때는 필요 없음)
 # 주의: 01_schema.sql 은 DB 를 통째로 지우고 다시 만든다.
 db: check-mysql
 	"$(MYSQL_CLI)" -u $(MYSQL_USER) $(PW_ARG) --default-character-set=utf8mb4 < sql/01_schema.sql

@@ -1251,6 +1251,34 @@ button.danger { color: var(--danger); }
 .mini-row strong { font-size: 14px; font-weight: 650; }
 .mini-row .muted { margin-left: auto; }
 
+/* ═══════════════════════════════════════════════════ 그룹 스터디 */
+
+.filters.one { grid-template-columns: minmax(0, 240px); }
+
+/* 역할 표시: 멘토 = 초록, 멘티 = 청록, 방장 = 인디고 */
+.tag.mentor { background: var(--ok-soft);      color: var(--ok); }
+.tag.mentee { background: var(--k-hack-soft);  color: var(--k-hack); }
+.tag.owner  { background: var(--brand-soft);   color: var(--brand-dark); }
+
+.study-members { display: flex; flex-direction: column; gap: 18px; }
+.study-group-title { margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--text-2); }
+.study-member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.study-member + .study-member { margin-top: 6px; }
+.study-member .avatar { box-shadow: none; }
+.study-member .person-who { flex: 1; }
+.study-member-tools { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.study-member-tools select { width: auto; padding: 6px 10px; font-size: 13px; }
+
+.study-search { display: grid; grid-template-columns: 1fr 140px auto; gap: 10px; margin-bottom: 12px; }
+
 /* ═══════════════════════════════════════════════════ 팀원 찾기 */
 
 .my-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -4px 0 16px; }
@@ -1494,4 +1522,6 @@ button.block { width: 100%; padding: 11px 16px; }
   .aa-split, .aa-compare, .aa-sys.sub { grid-template-columns: 1fr; }
   .aa-sys { flex-direction: column; }
   .aa-arrow { transform: rotate(90deg); }
+  .study-search { grid-template-columns: 1fr; }
+  .study-member-tools { margin-left: 0; width: 100%; }
 }

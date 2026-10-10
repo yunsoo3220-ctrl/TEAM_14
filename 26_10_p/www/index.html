@@ -74,6 +74,12 @@
       </span>
       <span class="label">팀원 찾기<small>Matches</small></span>
     </a>
+    <a href="#/studies" data-nav="studies">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 19.5V5a2 2 0 012-2h14v15H6a2 2 0 00-2 2v.5A1.5 1.5 0 005.5 22H20"/><path d="M9 7h7M9 11h5"/></svg>
+      </span>
+      <span class="label">그룹 스터디<small>Study Groups</small></span>
+    </a>
     <a href="#/ai" data-nav="ai">
       <span class="ico" aria-hidden="true">
         <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 9.5h5v5h-5zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
@@ -369,6 +375,82 @@
           <button type="submit">등록</button>
         </div>
       </form>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 그룹 스터디
+     tpl-studies: 목록 (#/studies), tpl-study-new: 만들기 (#/studies/new), tpl-study: 상세·멤버 (#/studies/{id}) -->
+<template id="tpl-studies">
+  <div class="stack">
+    <section class="card">
+      <div class="card-head">
+        <h2>그룹 스터디 <span data-count class="muted"></span></h2>
+        <a class="btn" href="#/studies/new" data-new>스터디 만들기</a>
+      </div>
+      <div class="filters one">
+        <label><span>보기</span>
+          <select data-f="mine">
+            <option value="">전체 스터디</option>
+            <option value="1">내가 속한 스터디</option>
+          </select>
+        </label>
+      </div>
+    </section>
+    <div data-list class="recruit-grid"></div>
+  </div>
+</template>
+
+<template id="tpl-study-new">
+  <div class="stack">
+    <a class="back" href="#/studies">← 그룹 스터디</a>
+    <section class="card">
+      <div class="card-head"><h2>스터디 만들기</h2></div>
+      <form data-form class="stack-sm">
+        <label><span>스터디 이름</span><input name="name" maxlength="100" required placeholder="예) 정보처리기사 실기 스터디"></label>
+        <label><span>정원</span><input name="max_members" type="number" min="2" max="50" value="6" required></label>
+        <label><span>소개 <small>선택</small></span><textarea name="description" rows="5" maxlength="1000"
+          placeholder="무엇을 공부하는지, 모이는 요일·방식(온라인/대면), 멘토·멘티를 둘 계획인지 적어 주세요."></textarea></label>
+        <p class="muted small">만든 사람이 방장이 됩니다. 방장은 멤버를 추가하고 멘토·멘티를 정할 수 있습니다.</p>
+        <div class="row"><button type="submit">만들기</button></div>
+      </form>
+    </section>
+  </div>
+</template>
+
+<template id="tpl-study">
+  <div class="stack">
+    <a class="back" href="#/studies">← 그룹 스터디</a>
+    <article class="card post">
+      <div class="post-head">
+        <div class="item-top" data-tags-top></div>
+        <h2 data-name></h2>
+      </div>
+      <dl class="meta">
+        <div><dt>방장</dt><dd data-owner></dd></div>
+        <div><dt>인원</dt><dd data-count></dd></div>
+        <div><dt>멘토 · 멘티</dt><dd data-mm></dd></div>
+        <div><dt>만든 날</dt><dd data-created></dd></div>
+      </dl>
+      <p class="body" data-description></p>
+      <div class="row owner-actions" data-actions hidden></div>
+    </article>
+    <section class="card">
+      <div class="card-head"><h2>멤버</h2></div>
+      <div data-members class="study-members"></div>
+    </section>
+    <section class="card" data-add hidden>
+      <div class="card-head"><h2>멤버 추가 <small class="muted">방장</small></h2></div>
+      <form data-search class="study-search">
+        <input name="q" placeholder="표시 이름 또는 학과로 찾기 (예: 김*수, 컴퓨터)" autocomplete="off">
+        <select name="role">
+          <option value="member">일반 멤버로</option>
+          <option value="mentor">멘토로</option>
+          <option value="mentee">멘티로</option>
+        </select>
+        <button type="submit">찾기</button>
+      </form>
+      <div data-results class="mini-list"></div>
     </section>
   </div>
 </template>

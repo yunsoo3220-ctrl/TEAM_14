@@ -7,6 +7,7 @@
  *   api_ai.c        : Claude API 를 이용한 게시물 분석·추천
  *   api_ml.c        : 로컬 임베딩/추천 모델 기반 기능
  *   api_community.c : 관심 키워드·프로필, 잘 맞는 회원, 팀원 모집 글·댓글·좋아요
+ *   api_study.c     : 그룹 스터디 (멤버·멘토/멘티)
  * 이 헤더는 그 파일들이 서로 공유해야 하는 타입과 함수만 모아 둔 것이다.
  */
 #ifndef SKU_API_H
@@ -62,6 +63,7 @@ int  route_admin(Request *req, Response *res);      /* 게시물 등록/삭제·
 int  route_ai(Request *req, Response *res);         /* /api/recommendations, /api/ai/...   (api_ai.c) */
 int  route_ml(Request *req, Response *res);         /* /api/related, /api/ml/...           (api_ml.c) */
 int  route_community(Request *req, Response *res);  /* 키워드·프로필·팀원 모집 게시판      (api_community.c) */
+int  route_study(Request *req, Response *res);      /* 그룹 스터디·멤버·멘토/멘티         (api_study.c) */
 
 /* 관심 키워드 이름과 자기소개를 이어 붙인 글 (추천 개인화용). 내용이 있으면 1.
  * 추천 엔진은 이 글을 "사용자를 설명하는 문장" 으로 보고 게시물과 비교한다. */

@@ -1763,6 +1763,253 @@ async function viewRecruit(id) {
   render(node);
 }
 
+/* ══════════════════════════════════════════════════ 그룹 스터디 */
+
+const ROLE_LABEL = { mentor: '멘토', mentee: '멘티', member: '멤버' };
+
+/* 스터디 목록 카드 */
+function studyCard(s) {
+  const full = s.member_count >= s.max_members;
+  const a = el('a', 'recruit-card' + (full && !s.my_role ? ' closed' : ''));
+  a.href = `#/studies/${s.id}`;
+
+  const tags = el('div', 'item-top');
+  tags.append(el('span', full ? 'tag plain' : 'tag ok', `${s.member_count} / ${s.max_members}명`));
+  if (s.mentor_count) tags.append(el('span', 'tag mentor', `멘토 ${s.mentor_count}`));
+  if (s.mentee_count) tags.append(el('span', 'tag mentee', `멘티 ${s.mentee_count}`));
+  if (s.my_role) tags.append(el('span', 'tag owner',
+    state.me && state.me.id === s.owner_id ? '내가 방장' : `참여 중 · ${ROLE_LABEL[s.my_role]}`));
+
+  a.append(tags, el('h3', null, s.name));
+  if (s.excerpt) a.append(el('p', 'item-summary excerpt', s.excerpt));
+  const meta = el('div', 'item-meta');
+  meta.append(el('span', null, `방장 ${s.owner_nickname}`), el('span', null, s.created_at.slice(0, 10)));
+  const foot = el('div', 'recruit-foot');
+  foot.append(meta);
+  a.append(foot);
+  return a;
+}
+
+/* #/studies - 스터디 목록 (전체 / 내가 속한 것) */
+async function viewStudies() {
+  markNav('studies');
+  setPageTitle('그룹 스터디');
+
+  const node = tpl('tpl-studies');
+  const root = node.firstElementChild;
+  const listEl = root.querySelector('[data-list]');
+  const countEl = root.querySelector('[data-count]');
+  const mineSel = root.querySelector('[data-f="mine"]');
+  if (!state.me) {
+    root.querySelector('[data-new]').href = '#/login';
+    mineSel.querySelector('[value="1"]').disabled = true;
+  }
+
+  async function reload() {
+    listEl.replaceChildren(...skeleton(4, 'sk-reco'));
+    try {
+      const r = await api(`/api/studies${mineSel.value ? '?mine=1' : ''}`);
+      countEl.textContent = `(${r.studies.length})`;
+      listEl.replaceChildren(...(r.studies.length
+        ? r.studies.map(studyCard)
+        : [el('p', 'empty', mineSel.value ? '아직 참여한 스터디가 없습니다.' : '아직 스터디가 없습니다. 첫 스터디를 만들어 보세요.')]));
+    } catch (e) {
+      listEl.replaceChildren(el('p', 'empty', e.message));
+    }
+  }
+  mineSel.onchange = reload;
+  render(node);
+  reload();
+}
+
+/* #/studies/new - 스터디 만들기 */
+function viewStudyNew() {
+  markNav('studies');
+  setPageTitle('스터디 만들기');
+  if (!state.me) return requireLogin('스터디를 만들려면 로그인하세요.');
+
+  const node = tpl('tpl-study-new');
+  const form = node.querySelector('[data-form]');
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const v = formValues(form);
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      const out = await api('/api/studies', {
+        method: 'POST',
+        body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6) }),
+      });
+      toast('스터디를 만들었습니다. 멤버를 추가해 보세요.');
+      location.hash = `#/studies/${out.id}`;
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false;
+    }
+  };
+  render(node);
+}
+
+/* 멤버 한 줄. 방장에게는 역할 선택과 [내보내기] 를 붙인다. */
+function studyMemberRow(m, study, canManage, reload) {
+  const row = el('div', 'study-member');
+  const who = el('div', 'person-who');
+  const name = el('strong', null, m.nickname);
+  who.append(name, el('span', 'muted small', [m.department, `${m.joined_at} 참여`].filter(Boolean).join(' · ')));
+  row.append(el('span', 'avatar', m.nickname.slice(0, 1)), who);
+
+  const tools = el('div', 'study-member-tools');
+  if (m.is_owner) tools.append(el('span', 'tag owner', '방장'));
+
+  if (canManage) {
+    /* 역할 바꾸기 (방장 자신도 멘토로 정할 수 있다) */
+    const sel = el('select');
+    for (const [v, label] of Object.entries(ROLE_LABEL)) sel.append(new Option(label, v));
+    sel.value = m.role;
+    sel.setAttribute('aria-label', `${m.nickname} 역할`);
+    sel.onchange = async () => {
+      try {
+        await api(`/api/studies/${study.id}/members/${m.user_id}`, {
+          method: 'PUT', body: JSON.stringify({ role: sel.value }) });
+        toast(`${m.nickname} 님을 ${ROLE_LABEL[sel.value]}(으)로 정했습니다.`);
+        reload();
+      } catch (e) { toast(e.message); sel.value = m.role; }
+    };
+    tools.append(sel);
+    if (!m.is_owner) {
+      const out = el('button', 'ghost small danger', '내보내기');
+      out.onclick = async () => {
+        if (!confirm(`${m.nickname} 님을 스터디에서 내보낼까요?`)) return;
+        try {
+          await api(`/api/studies/${study.id}/members/${m.user_id}`, { method: 'DELETE' });
+          reload();
+        } catch (e) { toast(e.message); }
+      };
+      tools.append(out);
+    }
+  } else if (m.role !== 'member') {
+    tools.append(el('span', `tag ${m.role}`, ROLE_LABEL[m.role]));
+  }
+  row.append(tools);
+  return row;
+}
+
+/* #/studies/{id} - 스터디 상세: 멤버(멘토·멘티·멤버 묶음), 참여/나가기, 방장의 멤버 추가 */
+async function viewStudy(id) {
+  markNav('studies');
+  setPageTitle('그룹 스터디');
+
+  let data;
+  try { data = await api(`/api/studies/${id}`); }
+  catch (e) { return renderMessage(e.message); }
+
+  const { study: s, description, members, can_manage } = data;
+  const reload = () => viewStudy(id);
+  const node = tpl('tpl-study');
+  const root = node.firstElementChild;
+  const full = s.member_count >= s.max_members;
+
+  const top = root.querySelector('[data-tags-top]');
+  top.append(el('span', full ? 'tag plain' : 'tag ok', full ? '정원 마감' : '참여 가능'));
+  if (s.my_role) top.append(el('span', 'tag owner', `참여 중 · ${ROLE_LABEL[s.my_role]}`));
+  root.querySelector('[data-name]').textContent = s.name;
+  root.querySelector('[data-owner]').textContent = s.owner_nickname;
+  root.querySelector('[data-count]').textContent = `${s.member_count} / ${s.max_members}명`;
+  root.querySelector('[data-mm]').textContent = `멘토 ${s.mentor_count} · 멘티 ${s.mentee_count}`;
+  root.querySelector('[data-created]').textContent = s.created_at;
+  root.querySelector('[data-description]').textContent = description || '소개가 없습니다.';
+
+  /* 참여하기 / 나가기 / 삭제 */
+  const actions = root.querySelector('[data-actions]');
+  const isOwner = state.me && state.me.id === s.owner_id;
+  if (!state.me) {
+    const a = el('a', 'btn small', '로그인하고 참여하기');
+    a.href = '#/login';
+    actions.append(a);
+  } else if (!s.my_role && !state.me.is_admin) {
+    const join = el('button', 'small', full ? '정원이 찼습니다' : '참여하기');
+    join.disabled = full;
+    join.onclick = async () => {
+      try {
+        await api(`/api/studies/${id}/join`, { method: 'POST' });
+        toast('스터디에 참여했습니다.');
+        reload();
+      } catch (e) { toast(e.message); }
+    };
+    actions.append(join);
+  } else if (s.my_role && !isOwner) {
+    const leave = el('button', 'ghost small', '스터디 나가기');
+    leave.onclick = async () => {
+      if (!confirm('이 스터디에서 나갈까요?')) return;
+      try {
+        await api(`/api/studies/${id}/members/${state.me.id}`, { method: 'DELETE' });
+        toast('스터디에서 나왔습니다.');
+        reload();
+      } catch (e) { toast(e.message); }
+    };
+    actions.append(leave);
+  }
+  if (can_manage) {
+    const del = el('button', 'ghost small danger', '스터디 삭제');
+    del.onclick = async () => {
+      if (!confirm('이 스터디를 지울까요? 멤버 목록도 함께 지워집니다.')) return;
+      try {
+        await api(`/api/studies/${id}`, { method: 'DELETE' });
+        toast('지웠습니다.');
+        location.hash = '#/studies';
+      } catch (e) { toast(e.message); }
+    };
+    actions.append(del);
+  }
+  actions.hidden = !actions.childElementCount;
+
+  /* 멤버: 멘토 → 멘티 → 멤버 묶음 (빈 묶음은 생략) */
+  const memEl = root.querySelector('[data-members]');
+  for (const role of ['mentor', 'mentee', 'member']) {
+    const list = members.filter(m => m.role === role);
+    if (!list.length) continue;
+    const group = el('div');
+    group.append(el('h3', 'study-group-title', `${ROLE_LABEL[role]} (${list.length})`),
+                 ...list.map(m => studyMemberRow(m, s, can_manage, reload)));
+    memEl.append(group);
+  }
+
+  /* 방장: 회원 찾아서 추가 */
+  if (can_manage) {
+    const box = root.querySelector('[data-add]');
+    box.hidden = false;
+    const form = box.querySelector('[data-search]');
+    const results = box.querySelector('[data-results]');
+    if (full) results.append(el('p', 'empty small', '정원이 찼습니다. 멤버를 더 넣으려면 누군가 나가야 합니다.'));
+    form.onsubmit = async ev => {
+      ev.preventDefault();
+      const { q, role } = formValues(form);
+      if (!q) return;
+      try {
+        const { users } = await api(`/api/studies/${id}/candidates?q=${encodeURIComponent(q)}`);
+        results.replaceChildren(...(users.length ? users.map(u => {
+          const r = el('div', 'mini-row');
+          r.append(el('strong', null, u.nickname), el('span', 'muted', u.department || ''));
+          const add = el('button', 'small', `${ROLE_LABEL[role]}(으)로 추가`);
+          add.onclick = async () => {
+            add.disabled = true;
+            try {
+              await api(`/api/studies/${id}/members`, {
+                method: 'POST', body: JSON.stringify({ user_id: u.id, role }) });
+              toast(`${u.nickname} 님을 추가했습니다.`);
+              reload();
+            } catch (e) { toast(e.message); add.disabled = false; }
+          };
+          r.append(add);
+          return r;
+        }) : [el('p', 'empty small', '찾는 회원이 없거나 이미 멤버입니다.')]));
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  render(node);
+}
+
 /* ══════════════════════════════════════════ 팀원 찾기 · 내 프로필 */
 
 /* 잘 맞는 회원 카드: 아바타, 소속, 점수 게이지, 키워드(겹치는 것 강조), ♥ 관계, 자기소개 */
@@ -1913,6 +2160,9 @@ function route() {
   if (parts[0] === 'recruits' && parts[1] === 'new') return viewRecruitNew(parts[2]);
   if (parts[0] === 'recruits' && parts[1]) return viewRecruit(Number(parts[1]));
   if (parts[0] === 'recruits') return viewRecruits();
+  if (parts[0] === 'studies' && parts[1] === 'new') return viewStudyNew();
+  if (parts[0] === 'studies' && parts[1]) return viewStudy(Number(parts[1]));
+  if (parts[0] === 'studies') return viewStudies();
   if (parts[0] === 'people') return viewPeople();
   if (parts[0] === 'ai') return viewAi();
   if (parts[0] === 'me') return viewMe();

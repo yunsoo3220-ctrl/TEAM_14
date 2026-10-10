@@ -1024,6 +1024,7 @@ void api_dispatch(Request *req, Response *res)
         if (route_ai(req, res))    return;
         if (route_ml(req, res))    return;
         if (route_community(req, res)) return;
+        if (route_study(req, res))     return;
         res_error(res, 404, "no_route", "그런 API 가 없습니다.");
         return;
     }

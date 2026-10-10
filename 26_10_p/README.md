@@ -93,6 +93,8 @@ mysql -u root -p --default-character-set=utf8mb4 < sql/02_seed_departments.sql
 - `06_community.sql` — 자기소개·관심 키워드·팀원 모집 게시판 표를 기존 DB 에 더하는
   변경분 (한 번만). `01` 을 처음부터 돌렸다면 필요 없다.
 - `07_interest_tags.sql` — 가입할 때 고르는 관심 키워드 41개. `make db` 가 함께 넣는다.
+- `12_study_groups.sql` — 그룹 스터디 표(`study_groups`, `study_members`)를 기존 DB 에 더하는
+  변경분 (다시 돌려도 된다). `01` 을 처음부터 돌렸다면 필요 없다.
 
 ### 시연용 가상 회원
 
@@ -266,6 +268,17 @@ ml\.venv\Scripts\python.exe ml\finetune.py               # 미세조정 → 임�
     근거에 "내 모집글에 ♥", "같은 모집글에 ♥" 처럼 보여 준다.
 - 다른 회원에게 보이는 것은 표시 이름·학과·키워드·자기소개뿐이다. 실명·전화번호·학번은 나가지 않는다.
 
+### 그룹 스터디
+
+- **만들기** (`#/studies/new`) — 스터디 이름, 정원(2~50), 소개를 정한다. 만든 사람이 방장이자 첫 멤버가 된다.
+- **참여** — 로그인한 학생은 상세 화면에서 "참여하기" 로 들어오고 "스터디 나가기" 로 나간다. 정원이 차면 막힌다.
+- **멤버 추가** — 방장은 표시 이름이나 학과로 회원을 찾아 바로 넣을 수 있다 (학번·실명으로는 찾지 않는다).
+- **멘토·멘티 (선택)** — 방장이 멤버마다 멤버 / 멘토 / 멘티를 고른다. 화면에는 멘토 → 멘티 → 멤버 순으로 묶여 보인다.
+- 방장은 나갈 수 없고 스터디를 삭제한다. 관리자는 모든 스터디를 관리할 수 있다.
+- 정원 검사와 추가는 한 트랜잭션이라 두 사람이 동시에 마지막 자리에 들어와도 정원을 넘지 않는다.
+- 기존 DB 에는 `sql/12_study_groups.sql` 을 한 번 적용한다.
+- 자세한 내용(API 응답 예, 설계, 바뀐 파일, 시험 목록)은 [STUDY_GROUPS.md](STUDY_GROUPS.md) 에 있다.
+
 ### AI 분석·추천 켜기 (Claude, 유료·선택)
 
 환경변수 `ANTHROPIC_API_KEY` 를 주고 서버를 띄우면 켜진다. 없으면 AI 메뉴와 추천 영역이
@@ -438,6 +451,13 @@ HTML 을 긁는 대신 이 API 를 쓰면 제목·날짜·링크를 그대로 �
 | DELETE | `/api/recruit-comments/{id}` | 본인·관리자 | 모집글 댓글 삭제 |
 | POST | `/api/recruits/{id}/like` | 로그인 | 마음에 들어요 (내 글 제외) → `{liked, like_count}` |
 | DELETE | `/api/recruits/{id}/like` | 로그인 | 마음에 들어요 취소 |
+| GET / POST | `/api/studies` | 누구나 / 로그인 | 스터디 목록 `?mine=1` / 만들기 `{name, description, max_members}` |
+| GET / DELETE | `/api/studies/{id}` | 누구나 / 방장 | 스터디 + 멤버 / 삭제 |
+| POST | `/api/studies/{id}/join` | 로그인 | 참여하기 |
+| GET | `/api/studies/{id}/candidates` | 방장 | 추가할 회원 찾기 `?q=표시이름·학과` |
+| POST | `/api/studies/{id}/members` | 방장 | 멤버 추가 `{user_id, role}` |
+| PUT | `/api/studies/{id}/members/{uid}` | 방장 | 역할 `{role: member\|mentor\|mentee}` |
+| DELETE | `/api/studies/{id}/members/{uid}` | 방장 / 본인 | 내보내기 / 나가기 |
 | GET | `/api/ai/status` | 관리자 | AI 분석 진행 상황 |
 | POST | `/api/ai/analyze` | 관리자 | AI 분석 시작. `{"force": true}` 면 전체 다시 분석 |
 
@@ -458,6 +478,7 @@ src/
   embed.c/.h     임베딩 서비스 클라이언트 (WinHTTP → 127.0.0.1:8001)
   api_ml.c       학과별 추천 API
   api_community.c 관심 키워드·프로필·팀원 찾기·팀원 모집 게시판 API
+  api_study.c    그룹 스터디·멤버·멘토/멘티 API
   json.c/.h      JSON 파서와 빌더
   sha256.c/.h    SHA-256, 솔트 반복 해싱 비밀번호
   str.c          가변 문자열 버퍼, 로그

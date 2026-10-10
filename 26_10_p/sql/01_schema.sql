@@ -282,6 +282,31 @@ CREATE TABLE recruit_likes (
   CONSTRAINT fk_rl_user    FOREIGN KEY (user_id)    REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 그룹 스터디. 만든 사람(owner)이 방장으로 멤버 추가·역할 지정·삭제를 한다.
+CREATE TABLE study_groups (
+  id          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  owner_id    INT UNSIGNED  NOT NULL,                 -- 방장
+  name        VARCHAR(100)  NOT NULL,                 -- 스터디 이름
+  description VARCHAR(1000) NOT NULL DEFAULT '',
+  max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
+  created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_study_groups_owner (owner_id),
+  CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 스터디 멤버와 역할 (member = 일반, mentor = 멘토, mentee = 멘티)
+CREATE TABLE study_members (
+  group_id  INT UNSIGNED NOT NULL,
+  user_id   INT UNSIGNED NOT NULL,
+  role      ENUM('member','mentor','mentee') NOT NULL DEFAULT 'member',
+  joined_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_id, user_id),                    -- 한 스터디에 한 번만
+  KEY ix_study_members_user (user_id),
+  CONSTRAINT fk_sm_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sm_user  FOREIGN KEY (user_id)  REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 -- 마지막 수집 시각 등 서버 설정값
 -- 키-값(k-v) 형태라 설정이 늘어도 표 구조를 바꿀 필요가 없다.
 --   crawl.window_days : 공지 수집 기간(일), crawl.fetched_at : 마지막 수집 시각
