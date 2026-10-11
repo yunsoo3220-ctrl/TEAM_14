@@ -1784,6 +1784,7 @@ function studyCard(s) {
   if (s.excerpt) a.append(el('p', 'item-summary excerpt', s.excerpt));
   const meta = el('div', 'item-meta');
   meta.append(el('span', null, `방장 ${s.owner_nickname}`), el('span', null, s.created_at.slice(0, 10)));
+  if (s.end_date) meta.append(el('span', null, `~ ${s.end_date} 종료`));
   const foot = el('div', 'recruit-foot');
   foot.append(meta);
   a.append(foot);
@@ -1830,6 +1831,8 @@ function viewStudyNew() {
 
   const node = tpl('tpl-study-new');
   const form = node.querySelector('[data-form]');
+  const now = new Date();   /* 종료일은 오늘부터 고를 수 있다 (지난 날짜면 바로 지워지므로) */
+  form.elements.end_date.min = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   form.onsubmit = async ev => {
     ev.preventDefault();
     const v = formValues(form);
@@ -1838,7 +1841,8 @@ function viewStudyNew() {
     try {
       const out = await api('/api/studies', {
         method: 'POST',
-        body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6) }),
+        body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6),
+                               end_date: v.end_date || null }),
       });
       toast('스터디를 만들었습니다. 멤버를 추가해 보세요.');
       location.hash = `#/studies/${out.id}`;
@@ -1917,6 +1921,7 @@ async function viewStudy(id) {
   root.querySelector('[data-count]').textContent = `${s.member_count} / ${s.max_members}명`;
   root.querySelector('[data-mm]').textContent = `멘토 ${s.mentor_count} · 멘티 ${s.mentee_count}`;
   root.querySelector('[data-created]').textContent = s.created_at;
+  root.querySelector('[data-end]').textContent = s.end_date ? `${s.end_date} (지나면 자동 삭제)` : '정하지 않음';
   root.querySelector('[data-description]').textContent = description || '소개가 없습니다.';
 
   /* 참여하기 / 나가기 / 삭제 */

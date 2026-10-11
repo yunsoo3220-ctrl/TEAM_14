@@ -409,6 +409,7 @@
       <form data-form class="stack-sm">
         <label><span>스터디 이름</span><input name="name" maxlength="100" required placeholder="예) 정보처리기사 실기 스터디"></label>
         <label><span>정원</span><input name="max_members" type="number" min="2" max="50" value="6" required></label>
+        <label><span>종료일 <small>선택 · 이날이 지나면 스터디가 자동으로 삭제됩니다</small></span><input name="end_date" type="date"></label>
         <label><span>소개 <small>선택</small></span><textarea name="description" rows="5" maxlength="1000"
           placeholder="무엇을 공부하는지, 모이는 요일·방식(온라인/대면), 멘토·멘티를 둘 계획인지 적어 주세요."></textarea></label>
         <p class="muted small">만든 사람이 방장이 됩니다. 방장은 멤버를 추가하고 멘토·멘티를 정할 수 있습니다.</p>
@@ -431,6 +432,7 @@
         <div><dt>인원</dt><dd data-count></dd></div>
         <div><dt>멘토 · 멘티</dt><dd data-mm></dd></div>
         <div><dt>만든 날</dt><dd data-created></dd></div>
+        <div><dt>종료일</dt><dd data-end></dd></div>
       </dl>
       <p class="body" data-description></p>
       <div class="row owner-actions" data-actions hidden></div>

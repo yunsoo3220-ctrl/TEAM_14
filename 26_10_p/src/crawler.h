@@ -46,4 +46,10 @@ void html_entity_decode(char *s);
  * 붙인 글이 있으면 1, 받지 못했거나 비었으면 0 (out 은 그대로). */
 int notice_body_text(long ext_id, Buf *out);
 
+/* 공지 본문에서 접수 마감일을 짐작해 out 에 "YYYY-MM-DD" 로 쓴다. 찾으면 1, 못 찾으면 0.
+ *   "접수: 2026. 09. 28. ~ 2026. 10. 22." 처럼 접수·신청·마감 등이 있는 줄을 먼저 보고,
+ *   없으면 "기간"·"일정" 줄을 본다. 한 줄에 날짜가 여럿이면 가장 늦은 날(범위의 끝)을 고른다.
+ *   published : 공지 게시일 "YYYY-MM-DD" (연도가 빠진 날짜의 연도를 정하는 기준) */
+int notice_guess_deadline(const char *body, const char *published, char out[11]);
+
 #endif /* SKU_CRAWLER_H */

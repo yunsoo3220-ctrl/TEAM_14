@@ -1,7 +1,7 @@
 /* 그룹 스터디
  *
  *   GET    /api/studies                        스터디 목록 ?mine=1 이면 내가 속한 것만
- *   POST   /api/studies                        스터디 만들기 {name, description?, max_members?} (로그인)
+ *   POST   /api/studies                        스터디 만들기 {name, description?, max_members?, end_date?} (로그인)
  *   GET    /api/studies/{id}                   스터디 + 멤버
  *   DELETE /api/studies/{id}                   스터디 삭제 (방장·관리자)
  *   POST   /api/studies/{id}/join              참여하기 (로그인, 정원 안에서)
@@ -13,6 +13,7 @@
  * 방장은 스터디를 만든 사람이다. 만들 때 자동으로 멤버가 되고, 나갈 수는 없다 (스터디를 지운다).
  * 멘토·멘티는 선택이다. 역할을 정하지 않은 멤버는 member 로 남는다.
  * 다른 회원에게 보이는 것은 표시 이름·학과뿐이다 (api_community.c 와 같은 원칙).
+ * 종료일(end_date)을 정한 스터디는 그날이 지나면 자동으로 지워진다 (cleanup.c).
  *
  * 관련 테이블:
  *   study_groups   스터디 (owner_id = 방장)
@@ -30,6 +31,24 @@
 #define CANDIDATE_MAX     10     /* 멤버 검색 결과 최대 수 */
 
 /* ------------------------------------------------------------ 도우미 */
+
+/* "YYYY-MM-DD" 형식만 통과, 아니면 NULL (api_community.c 의 같은 이름 함수와 동일) */
+static const char *clean_date(const char *s)
+{
+    int i;
+
+    if (!s || strlen(s) != 10)
+        return NULL;
+    for (i = 0; i < 10; i++) {
+        if (i == 4 || i == 7) {
+            if (s[i] != '-')
+                return NULL;
+        } else if (s[i] < '0' || s[i] > '9') {
+            return NULL;
+        }
+    }
+    return s;
+}
 
 /* 입력한 역할 이름을 코드 상수로 바꾼다. 모르는 값이면 NULL.
  * SQL 에는 사용자 입력이 아니라 이 상수를 넣는다. */
@@ -96,7 +115,7 @@ static int study_manage_ok(unsigned gid, const CurrentUser *u)
 /* ------------------------------------------------------------ 목록 */
 
 /* 목록 행: id, name, description 앞부분, max_members, created_at, owner_id, 방장 표시 이름,
- *          멤버 수, 멘토 수, 멘티 수, 내 역할('' = 멤버 아님)
+ *          멤버 수, 멘토 수, 멘티 수, 내 역할('' = 멤버 아님), 종료일('' = 없음)
  * db_sqlf 의 첫 인자로 지금 회원 번호(%u, 비로그인은 0)를 준다. */
 #define STUDY_SELECT \
     "SELECT g.id, g.name, LEFT(REPLACE(REPLACE(g.description, '\\r', ''), '\\n', ' '), 120), " \
@@ -104,7 +123,8 @@ static int study_manage_ok(unsigned gid, const CurrentUser *u)
     "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id), " \
     "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id AND m.role = 'mentor'), " \
     "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id AND m.role = 'mentee'), " \
-    "       IFNULL((SELECT m.role FROM study_members m WHERE m.group_id = g.id AND m.user_id = %u), '') " \
+    "       IFNULL((SELECT m.role FROM study_members m WHERE m.group_id = g.id AND m.user_id = %u), ''), " \
+    "       IFNULL(DATE_FORMAT(g.end_date, '%%Y-%%m-%%d'), '') " \
     "FROM study_groups g JOIN users u ON u.id = g.owner_id "
 
 /* STUDY_SELECT 결과 한 행을 JSON 객체로 쓴다 */
@@ -122,6 +142,8 @@ static void write_study_row(Buf *b, MYSQL_ROW row)
     json_kv_int(b, "mentor_count", atoll(row[8]));           buf_putc(b, ',');
     json_kv_int(b, "mentee_count", atoll(row[9]));           buf_putc(b, ',');
     json_kv_str(b, "my_role", row[10][0] ? row[10] : NULL);  /* null = 멤버 아님 */
+    buf_putc(b, ',');
+    json_kv_str(b, "end_date", row[11][0] ? row[11] : NULL); /* null = 종료일 없음 */
     buf_putc(b, '}');
 }
 
@@ -167,12 +189,13 @@ static void handle_study_list(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 만들기 · 상세 · 삭제 */
 
-/* POST /api/studies {name, description?, max_members?} - 만든 사람이 방장이자 첫 멤버가 된다 */
+/* POST /api/studies {name, description?, max_members?, end_date?} - 만든 사람이 방장이자 첫 멤버가 된다 */
 static void handle_study_create(Request *req, Response *res)
 {
     CurrentUser u;
     Json *in;
     char *name = NULL, *desc = NULL;
+    const char *end_date;
     int max;
     Buf sql;
     unsigned long long gid;
@@ -186,6 +209,7 @@ static void handle_study_create(Request *req, Response *res)
     name = str_dup(json_str(in, "name", ""));
     desc = str_dup(json_str(in, "description", ""));
     max = (int)json_int(in, "max_members", 10);
+    end_date = clean_date(json_str(in, "end_date", NULL));   /* 형식이 틀리거나 없으면 NULL (종료일 없음) */
     if (!name || !desc) {
         res_error(res, 500, "oom", "메모리가 부족합니다.");
         goto out;
@@ -207,13 +231,26 @@ static void handle_study_create(Request *req, Response *res)
         goto out;
     }
 
+    if (end_date) {
+        /* 오늘보다 앞이면 만들자마자 지워지므로 받지 않는다 */
+        Buf chk;
+        buf_init(&chk);
+        db_sqlf(&chk, "SELECT %Q < CURDATE()", end_date);
+        if (db_scalar(chk.data, 0)) {
+            buf_free(&chk);
+            res_error(res, 400, "bad_end_date", "종료일은 오늘이나 그 뒤로 정하세요.");
+            goto out;
+        }
+        buf_free(&chk);
+    }
+
     if (!db_begin()) {
         res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
         goto out;
     }
     buf_init(&sql);
-    db_sqlf(&sql, "INSERT INTO study_groups (owner_id, name, description, max_members) "
-                  "VALUES (%u, %Q, %Q, %d)", u.id, name, desc, max);
+    db_sqlf(&sql, "INSERT INTO study_groups (owner_id, name, description, max_members, end_date) "
+                  "VALUES (%u, %Q, %Q, %d, %Q)", u.id, name, desc, max, end_date);
     if (!db_exec_buf(&sql)) {
         buf_free(&sql);
         db_rollback();

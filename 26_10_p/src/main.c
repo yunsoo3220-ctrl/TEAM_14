@@ -12,7 +12,8 @@
  *     --db-name N        데이터베이스 이름 (기본 sku_contest)
  *     --webroot DIR      정적 파일 디렉터리 (기본 www)
  *     --add-admin 학번 이름 비밀번호   관리자 계정을 만들고 종료
- *     --crawl            공지를 한 번 수집하고 종료
+ *     --crawl            공지를 한 번 수집하고(지난 글 정리까지) 종료
+ *     --cleanup          기간이 지난 공모전·팀원 모집·스터디를 지우고 종료 (웹 서버는 1시간마다 알아서 한다)
  *     --ai-analyze       아직 분석하지 않은 게시물을 AI 로 분석하고 종료
  *                        (--force 를 붙이면 전체를 다시 분석)
  *     --test-mail 주소   SMTP 설정(SKU_SMTP_*)으로 시험 메일을 한 통 보내고 종료
@@ -23,10 +24,11 @@
  *   1) (--test-mail 이면 DB 없이 메일만 보내고 끝)
  *   2) 기본 설정값 채우기 → 명령줄 인자로 덮어쓰기
  *   3) DB 접속
- *   4) 일회성 작업 모드(--add-admin / --crawl / --ai-analyze)면 그 작업만 하고 종료
- *   5) 아니면 기초 데이터·기능 상태를 점검해 로그로 알리고 HTTP 서버를 띄운다(무한 대기)
+ *   4) 일회성 작업 모드(--add-admin / --crawl / --cleanup / --ai-analyze)면 그 작업만 하고 종료
+ *   5) 아니면 기초 데이터·기능 상태를 점검해 로그로 알리고, 지난 글 정리 스레드와 HTTP 서버를 띄운다(무한 대기)
  */
 #include "api.h"
+#include "cleanup.h"
 #include "db.h"
 #include "ai.h"
 #include "crawler.h"
@@ -51,6 +53,7 @@ static void usage(void)
         "             [--webroot www]\n"
         "  server.exe --add-admin <학번> <이름> <비밀번호>\n"
         "  server.exe --crawl\n"
+        "  server.exe --cleanup\n"
         "  server.exe --ai-analyze [--force]\n"
         "  server.exe --test-mail 받을주소@skuniv.ac.kr\n"
         "\n"
@@ -72,6 +75,7 @@ int main(int argc, char **argv)
     const char *env_pass;                         /* 환경변수 SKU_DB_PASS 값 */
     int bind_all = 0;                             /* 1 이면 외부 접속 허용 */
     int do_crawl = 0;                             /* --crawl 모드 */
+    int do_cleanup = 0;                           /* --cleanup 모드 */
     int do_ai = 0, ai_force = 0;                  /* --ai-analyze 모드, --force 여부 */
     const char *admin_no = NULL, *admin_name = NULL, *admin_pw = NULL;   /* --add-admin 인자 */
     int i;
@@ -129,6 +133,8 @@ int main(int argc, char **argv)
             return 0;
         } else if (!strcmp(a, "--crawl")) {
             do_crawl = 1;
+        } else if (!strcmp(a, "--cleanup")) {
+            do_cleanup = 1;
         } else if (!strcmp(a, "--ai-analyze")) {
             do_ai = 1;
         } else if (!strcmp(a, "--force")) {
@@ -171,6 +177,8 @@ int main(int argc, char **argv)
     /* 3) DB 접속 - 아래 모든 모드가 DB 를 필요로 한다 */
     if (!db_init(&db))
         return 1;
+    /* 예전 DB 에 없는 열(스터디 종료일 등)을 채운다 */
+    cleanup_ensure_schema();
 
     /* 4) 일회성 작업 모드들 */
 
@@ -191,8 +199,20 @@ int main(int argc, char **argv)
 
         if (!ok)
             log_err("수집 실패: %s", cr.error);
+        cleanup_expired();   /* 매일 수집 타이머가 돌 때 지난 글도 함께 정리 */
         db_close();
         return ok ? 0 : 1;
+    }
+
+    /* --cleanup: 지난 글만 정리하고 종료 */
+    if (do_cleanup) {
+        int n;
+        cleanup_backfill_deadlines();
+        n = cleanup_expired();
+        if (n >= 0)
+            log_info("정리 완료: %d건 삭제", n);
+        db_close();
+        return n >= 0 ? 0 : 1;
     }
 
     /* --ai-analyze: 분석만 하고 종료 */
@@ -231,6 +251,9 @@ int main(int argc, char **argv)
         log_info("접속 주소: http://%s/", canonical_host);
     else
         log_info("접속 주소: http://%s:%u/", canonical_host, port);
+
+    /* 기간이 지난 공모전·팀원 모집·스터디를 지금 한 번, 이후 1시간마다 지운다 */
+    cleanup_start();
 
     /* HTTP 서버 실행. 정상이라면 여기서 영원히 머문다(돌아오면 시작 실패). */
     if (!http_serve(port, bind_all, api_dispatch)) {

@@ -533,6 +533,201 @@ static int upsert_notice(long ext_id, const char *keyword, const char *title,
     return inserted;
 }
 
+/* ------------------------------------------------------------------ 마감일 추출 */
+
+/* 그레고리력 날짜 → 1970-01-01 부터 센 날 수. 두 날짜의 앞뒤를 비교하는 데만 쓴다. */
+static long day_number(int y, int m, int d)
+{
+    long era, yoe, doy, doe;
+
+    y -= m <= 2;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = y - era * 400;
+    doy = (153L * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+static const char *skip_spaces(const char *p)
+{
+    while (*p == ' ' || *p == '\t')
+        p++;
+    return p;
+}
+
+/* p 에서 숫자(최대 4자리)를 읽는다. 숫자가 아니면 -1. */
+static int read_num(const char **pp, int maxlen)
+{
+    const char *p = *pp;
+    int v = 0, n = 0;
+
+    while (isdigit((unsigned char)*p) && n < maxlen) {
+        v = v * 10 + (*p - '0');
+        p++;
+        n++;
+    }
+    if (n == 0 || isdigit((unsigned char)*p))   /* 너무 긴 숫자(전화번호 등)는 날짜가 아니다 */
+        return -1;
+    *pp = p;
+    return v;
+}
+
+/* 날짜 구분자: '.', '/', '-'(연도 뒤에서만) 또는 "년"/"월" (UTF-8) */
+static int skip_date_sep(const char **pp, const char *word, int allow_dash)
+{
+    const char *p = skip_spaces(*pp);
+
+    if (*p == '.' || *p == '/' || (allow_dash && *p == '-')) {
+        *pp = skip_spaces(p + 1);
+        return 1;
+    }
+    if (strncmp(p, word, strlen(word)) == 0) {
+        *pp = skip_spaces(p + strlen(word));
+        return 1;
+    }
+    return 0;
+}
+
+/* p 에서 시작하는 날짜 하나를 읽는다.
+ *   "2026.9.28"  "2026. 09. 28."  "2026-10-12"  "2026년 10월 12일"  "26년 6월 1일"  "’26. 3. 26."  → 연도 있음
+ *   "10.31"  "9/30"  "11월 22일"                                    → 연도 없음 (*y = 0)
+ * "09:00" 같은 시각이나 "02-940-7114" 같은 전화번호는 날짜로 보지 않는다.
+ * 읽었으면 1 과 함께 *end 를 날짜 뒤로 옮긴다. */
+static int read_date(const char *p, int after_quote, int *y, int *m, int *d, const char **end)
+{
+    const char *q = p;
+    int a = read_num(&q, 4);
+    int full_year  = (a >= 2000 && a <= 2100 && q - p == 4);
+    int short_year = (a >= 0 && q - p == 2 &&            /* "26년", "’26." */
+                      (after_quote || strncmp(skip_spaces(q), "년", strlen("년")) == 0));
+
+    *y = 0;
+    if (full_year || short_year) {                       /* 연도부터 ("26년" 은 2026년) */
+        *y = full_year ? a : 2000 + a;
+        if (!skip_date_sep(&q, "년", 1))
+            return 0;
+        a = read_num(&q, 2);
+        if (!skip_date_sep(&q, "월", 1))
+            return 0;
+    } else if (!skip_date_sep(&q, "월", 0)) {           /* 월부터: '-' 는 전화번호와 헷갈려 받지 않는다 */
+        return 0;
+    }
+    *m = a;
+    *d = read_num(&q, 2);
+    if (*m < 1 || *m > 12 || *d < 1 || *d > 31)
+        return 0;
+    *end = q;
+    return 1;
+}
+
+/* 줄 하나에서 keyword 뒤에 나오는 날짜 중 가장 늦은 날을 day_number 로 돌려준다 (없으면 -1).
+ *   "접수 : 2026. 09. 28. ~ 2026. 10. 22."  → 2026-10-22
+ *   "기간: 9.3.(목)09:00~11.8.(일)24:00까지" → 게시 연도의 11-08
+ * 연도가 빠진 날짜는 같은 줄 앞쪽 날짜의 연도, 그것도 없으면 게시 연도로 본다.
+ * 그렇게 정한 날이 앞쪽 날짜보다 앞이면 (또는 앞쪽 날짜가 없는데 게시일보다 반년 넘게 앞이면) 이듬해로 본다.
+ *   "2026.12.20 ~ 1.10."  /  12월 공지의 "1.10. 까지" */
+static long latest_date_after(const char *line, size_t len, const char *keyword,
+                              int pub_y, long pub_day)
+{
+    char seg[256];
+    const char *k, *p, *end;
+    long best = -1, prev = -1;   /* prev: 같은 줄에서 바로 앞에 읽은 날짜 */
+    int year = pub_y;
+
+    if (len >= sizeof seg)
+        len = sizeof seg - 1;
+    memcpy(seg, line, len);
+    seg[len] = '\0';
+    k = strstr(seg, keyword);
+    if (!k)
+        return -1;
+
+    for (p = k + strlen(keyword); *p; ) {
+        int y, m, d;
+        long day;
+
+        if (!isdigit((unsigned char)*p)) {
+            p++;
+            continue;
+        }
+        /* 바로 앞이 ' 또는 ’(UTF-8 E2 80 99) 이면 두 자리 연도 ("’26. 3. 26.") */
+        if (!read_date(p, p > seg && (p[-1] == '\'' || (p - seg >= 3 && !memcmp(p - 3, "\xE2\x80\x99", 3))),
+                       &y, &m, &d, &end)) {
+            while (isdigit((unsigned char)*p))   /* 숫자 덩어리를 통째로 건너뛴다 */
+                p++;
+            continue;
+        }
+        p = end;
+        if (y)
+            year = y;
+        day = day_number(y ? y : year, m, d);
+        if (!y && (prev >= 0 ? day < prev : day < pub_day - 180)) {
+            year++;
+            day = day_number(year, m, d);
+        }
+        prev = day;
+        /* 게시일보다 한참 전이거나 1년도 더 뒤인 날은 마감일이 아니다 (행사 연혁 등) */
+        if (day < pub_day - 7 || day > pub_day + 400)
+            continue;
+        if (day > best)
+            best = day;
+    }
+    return best;
+}
+
+/* 줄을 고르는 말. 앞 묶음에서 날짜를 찾으면 뒤 묶음은 보지 않는다.
+ *   1) 접수·응모 기간 그 자체   2) 신청·제출·마감 (결과보고서 제출 같은 뒷일정도 섞인다)   3) 기간·일정 일반 */
+static const char *const APPLY_WORDS[] = {
+    "접수", "응모", "모집 기간", "모집기간", "공모 기간", "공모기간", NULL
+};
+static const char *const DEADLINE_WORDS[] = {
+    "신청", "제출", "마감", "기한", "모집", NULL
+};
+static const char *const PERIOD_WORDS[] = {
+    "기간", "일정", "일시", NULL
+};
+
+int notice_guess_deadline(const char *body, const char *published, char out[11])
+{
+    const char *const *groups[3] = { APPLY_WORDS, DEADLINE_WORDS, PERIOD_WORDS };
+    int pub_y, pub_m, pub_d, g;
+    long pub_day;
+
+    if (!body || !published || sscanf(published, "%d-%d-%d", &pub_y, &pub_m, &pub_d) != 3)
+        return 0;
+    pub_day = day_number(pub_y, pub_m, pub_d);
+
+    for (g = 0; g < 3; g++) {
+        const char *line = body;
+        long best = -1;
+
+        while (*line) {
+            const char *nl = strchr(line, '\n');
+            size_t len = nl ? (size_t)(nl - line) : strlen(line);
+            int w;
+
+            for (w = 0; groups[g][w]; w++) {
+                long day = latest_date_after(line, len, groups[g][w], pub_y, pub_day);
+                if (day > best)
+                    best = day;
+            }
+            line += len;
+            if (*line == '\n')
+                line++;
+        }
+
+        if (best >= 0) {
+            /* day_number 의 역변환 대신 time_t 로 바꿔 날짜 문자열을 만든다 */
+            time_t t = (time_t)best * 86400;
+            struct tm tmv;
+            utc_time(t, &tmv);
+            strftime(out, 11, "%Y-%m-%d", &tmv);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* 아직 게시물이 되지 않은(pending) 공지를 모두 게시물로 올린다.
  *
  * 공모전 정보 자체는 로그인 없이 누구나 볼 수 있어야 하므로 수집한 공지는
@@ -564,6 +759,8 @@ static int publish_pending_notices(void)
                               ? "hackathon" : "contest";
         Buf body, sql;
         unsigned long long post_id;
+        char deadline[11];
+        const char *dl;
 
         /* 본문은 공지 원문을 텍스트로 옮긴다. 원문 링크는 source_url 에 따로 둔다.
          * 원문을 못 받으면 출처만 적어 둔다. 학교 서버에 부담을 주지 않게 조금 쉰다.
@@ -573,6 +770,8 @@ static int publish_pending_notices(void)
             sleep_ms(200);
         if (!notice_body_text(ext_id, &body))
             buf_printf(&body, "학교 공지 (%s, %s 게시)", keyword, date);
+        /* 본문의 "접수 기간" 등에서 마감일을 뽑아 둔다. 지난 공모전 자동 정리(cleanup.c)의 기준이 된다. */
+        dl = notice_guess_deadline(body.data, date, deadline) ? deadline : NULL;
 
         if (!db_begin()) {
             buf_free(&body);
@@ -585,8 +784,8 @@ static int publish_pending_notices(void)
         db_sqlf(&sql,
                 "INSERT INTO posts (author_id, kind, title, body, source_url, host, "
                 "                   deadline, need_people, created_at) "
-                "VALUES (NULL, '%s', %Q, %Q, %Q, NULL, NULL, 0, %Q)",
-                kind, title, body.data, url, date);
+                "VALUES (NULL, '%s', %Q, %Q, %Q, NULL, %Q, 0, %Q)",
+                kind, title, body.data, url, dl, date);
         buf_free(&body);
 
         if (!db_exec_buf(&sql)) {

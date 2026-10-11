@@ -291,6 +291,7 @@ CREATE TABLE study_groups (
   name        VARCHAR(100)  NOT NULL,                 -- 스터디 이름
   description VARCHAR(1000) NOT NULL DEFAULT '',
   max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
+  end_date    DATE          NULL,                    -- 종료일 (지나면 자동 삭제, NULL = 없음)
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_study_groups_owner (owner_id),
