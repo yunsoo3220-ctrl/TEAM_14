@@ -6,13 +6,20 @@
  */
 #include "db.h"
 
-#include <windows.h>   /* CRITICAL_SECTION */
+#include "platform.h"   /* Mutex */
 #include <stdio.h>
 #include <stdlib.h>    /* atoll */
 #include <string.h>
 
 static MYSQL            *g_conn;        /* 공유 DB 연결 (db_init 성공 후 유효) */
-static CRITICAL_SECTION  g_lock;        /* g_conn 을 보호하는 재진입 가능 잠금 */
+/* MySQL 8.0 클라이언트(맥 Homebrew 의 mysql-client 등)에는 my_bool 이 없고 bool 을 쓴다.
+ * MariaDB Connector/C (MSYS2, 리눅스 libmariadb-dev) 에는 my_bool 이 있다. */
+#if !defined(MARIADB_PACKAGE_VERSION_ID) && defined(MYSQL_VERSION_ID) && MYSQL_VERSION_ID >= 80000
+#  include <stdbool.h>
+typedef bool my_bool;
+#endif
+
+static Mutex             g_lock;       /* g_conn 을 보호하는 재진입 가능 잠금 */
 static int               g_lock_ready;  /* g_lock 이 초기화되었는지 (초기화 전 lock 호출 방지) */
 static char              g_err[512];    /* 마지막 SQL 오류 메시지 */
 static unsigned int      g_errno;       /* 마지막 SQL 오류 번호 */
@@ -28,7 +35,7 @@ int db_init(const DbConfig *cfg)
         return 0;
     }
 
-    InitializeCriticalSection(&g_lock);
+    mutex_init(&g_lock);
     g_lock_ready = 1;
 
     g_conn = mysql_init(NULL);   /* 연결 핸들 할당 (아직 접속은 안 함) */
@@ -71,7 +78,7 @@ void db_close(void)
         g_conn = NULL;
     }
     if (g_lock_ready) {
-        DeleteCriticalSection(&g_lock);
+        mutex_destroy(&g_lock);
         g_lock_ready = 0;
     }
     mysql_library_end();
@@ -93,14 +100,14 @@ void db_thread_end(void)
 void db_lock(void)
 {
     if (g_lock_ready)
-        EnterCriticalSection(&g_lock);
+        mutex_lock(&g_lock);
 }
 
 /* 잠금 해제. lock 한 횟수만큼 불러야 완전히 풀린다. */
 void db_unlock(void)
 {
     if (g_lock_ready)
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
 }
 
 /* s 를 SQL 문자열 리터럴('...')로 이스케이프해 b 에 붙인다. NULL 이면 NULL 키워드.

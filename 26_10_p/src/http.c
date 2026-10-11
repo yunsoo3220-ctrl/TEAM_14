@@ -1,4 +1,4 @@
-/* Winsock2 기반 HTTP/1.1 서버와 요청/응답 도우미
+/* 소켓(Windows: Winsock2, 리눅스·맥: BSD 소켓) 기반 HTTP/1.1 서버와 요청/응답 도우미
  *
  * HTTP 요청의 모양 (텍스트 프로토콜):
  *     POST /api/auth/login?x=1 HTTP/1.1\r\n      ← 요청 라인: 메서드 경로 버전
@@ -15,14 +15,37 @@
  */
 #include "http.h"
 #include "db.h"
+#include "platform.h"   /* thread_start (Windows 에서는 winsock2.h 도 여기서 먼저 포함) */
 
-#include <winsock2.h>   /* Windows 소켓 API (반드시 windows.h 보다 먼저) */
-#include <ws2tcpip.h>   /* inet_ntop */
-#include <windows.h>    /* CreateThread */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>     /* INT_MAX */
+
+/* 소켓 API 차이 맞추기. 함수 이름은 Winsock 쪽에 맞추고, POSIX 에서는 같은 이름을 정의해 준다.
+ *   Windows : SOCKET(부호 없는 정수), closesocket, WSAGetLastError, 시간 제한은 DWORD(ms)
+ *   POSIX   : int 파일 디스크립터, close, errno, 시간 제한은 struct timeval */
+#ifdef _WIN32
+#  include <ws2tcpip.h>   /* inet_ntop, socklen_t */
+typedef SOCKET sock_t;
+#  define sock_errno()   WSAGetLastError()
+#  define strncasecmp    _strnicmp
+#else
+#  include <sys/socket.h>
+#  include <sys/time.h>
+#  include <netinet/in.h>
+#  include <arpa/inet.h>   /* inet_ntop, htonl, htons */
+#  include <strings.h>     /* strncasecmp */
+#  include <unistd.h>      /* close */
+#  include <errno.h>
+typedef int sock_t;
+#  define INVALID_SOCKET (-1)
+#  define SOCKET_ERROR   (-1)
+#  define SD_BOTH        SHUT_RDWR
+#  define closesocket    close
+#  define sock_errno()   errno
+#endif
 
 #define RECV_CHUNK      8192    /* recv 한 번에 읽는 최대 바이트 */
 #define HEADER_MAX      16384   /* 헤더 최대 크기(16KB). 넘으면 연결을 끊는다 (메모리 고갈 공격 방지) */
@@ -299,10 +322,10 @@ void host_name_only(const char *host_header, char *out, size_t outsz)
 
 /* len 바이트를 모두 보낼 때까지 send 를 반복한다.
  * send 는 한 번에 일부만 보낼 수 있으므로(커널 버퍼가 차면) 반드시 반복해야 한다. */
-static int send_all(SOCKET s, const char *data, size_t len)
+static int send_all(sock_t s, const char *data, size_t len)
 {
     while (len) {
-        int n = send(s, data, (int)(len > INT_MAX ? INT_MAX : len), 0);   /* send 는 int 길이만 받음 */
+        int n = (int)send(s, data, (int)(len > INT_MAX ? INT_MAX : len), 0);   /* send 는 int 길이만 받음 */
         if (n <= 0)              /* 오류 또는 연결 끊김 */
             return 0;
         data += n;
@@ -312,7 +335,7 @@ static int send_all(SOCKET s, const char *data, size_t len)
 }
 
 /* Response 를 HTTP 텍스트로 직렬화해 보낸다. */
-static void send_response(SOCKET s, Response *res, int keep_alive)
+static void send_response(sock_t s, Response *res, int keep_alive)
 {
     Buf head;
 
@@ -415,12 +438,12 @@ static int parse_request(const char *head, size_t head_len, Request *req)
             memcpy(line, p, len);
             line[len] = '\0';
 
-            /* 헤더 이름은 대소문자를 구분하지 않으므로 _strnicmp 로 비교 */
-            if (_strnicmp(line, "Cookie:", 7) == 0)
+            /* 헤더 이름은 대소문자를 구분하지 않으므로 strncasecmp 로 비교 */
+            if (strncasecmp(line, "Cookie:", 7) == 0)
                 header_value(line, req->cookie, sizeof req->cookie);
-            else if (_strnicmp(line, "Content-Type:", 13) == 0)
+            else if (strncasecmp(line, "Content-Type:", 13) == 0)
                 header_value(line, req->content_type, sizeof req->content_type);
-            else if (_strnicmp(line, "Host:", 5) == 0)
+            else if (strncasecmp(line, "Host:", 5) == 0)
                 header_value(line, req->host, sizeof req->host);
         }
         if (!nl)
@@ -438,7 +461,7 @@ static long content_length_of(const char *head)
 
     while ((p = strchr(p, '\n')) != NULL) {
         p++;
-        if (_strnicmp(p, "Content-Length:", 15) == 0) {
+        if (strncasecmp(p, "Content-Length:", 15) == 0) {
             char v[32];
             header_value(p, v, sizeof v);
             return atol(v);       /* 음수가 올 수도 있으므로 호출자가 검사한다 */
@@ -454,7 +477,7 @@ static int wants_close(const char *head)
 
     while ((p = strchr(p, '\n')) != NULL) {
         p++;
-        if (_strnicmp(p, "Connection:", 11) == 0) {
+        if (strncasecmp(p, "Connection:", 11) == 0) {
             char v[64];
             header_value(p, v, sizeof v);
             return str_ieq(v, "close");
@@ -466,7 +489,7 @@ static int wants_close(const char *head)
 /* 연결 하나에서 요청들을 차례로 처리한다 (Keep-Alive).
  * in 버퍼에는 소켓에서 받은 바이트가 쌓이며, 한 번의 recv 로 요청 두 개가 같이
  * 들어올 수도 있으므로 처리한 만큼만 앞에서 잘라내고 나머지는 다음 요청에 쓴다. */
-static void handle_connection(SOCKET sock, const char *client_ip)
+static void handle_connection(sock_t sock, const char *client_ip)
 {
     Buf in;          /* 받은 바이트 누적 버퍼 */
     int alive = 1;   /* 연결을 계속 유지할지 */
@@ -498,7 +521,7 @@ static void handle_connection(SOCKET sock, const char *client_ip)
                 buf_free(&in);
                 return;
             }
-            n = recv(sock, chunk, sizeof chunk, 0);      /* 블로킹 (최대 SOCK_TIMEOUT_MS) */
+            n = (int)recv(sock, chunk, sizeof chunk, 0);      /* 블로킹 (최대 SOCK_TIMEOUT_MS) */
             if (n <= 0) {                                /* 0 = 상대가 연결을 닫음, 음수 = 오류/시간초과 */
                 buf_free(&in);
                 return;
@@ -520,7 +543,7 @@ static void handle_connection(SOCKET sock, const char *client_ip)
         /* 본문을 모두 받을 때까지 더 읽는다. */
         while (in.len < head_len + (size_t)clen) {
             char chunk[RECV_CHUNK];
-            int n = recv(sock, chunk, sizeof chunk, 0);
+            int n = (int)recv(sock, chunk, sizeof chunk, 0);
             if (n <= 0) {
                 buf_free(&in);
                 return;
@@ -578,20 +601,41 @@ static void handle_connection(SOCKET sock, const char *client_ip)
 
 /* 연결 스레드에 넘기는 인자 (스레드 함수는 void* 하나만 받으므로 구조체로 묶는다) */
 typedef struct {
-    SOCKET sock;      /* 클라이언트 소켓 */
+    sock_t sock;      /* 클라이언트 소켓 */
     char   ip[48];    /* 클라이언트 IP 문자열 */
 } ConnArg;
 
+/* 소켓 송수신 시간 제한 설정. Windows 는 DWORD(ms), POSIX 는 struct timeval 을 받는다. */
+static void set_timeouts(sock_t s, unsigned ms)
+{
+#ifdef _WIN32
+    DWORD tv = ms;
+#else
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+#endif
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof tv);
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&tv, sizeof tv);
+}
+
+/* 소켓을 닫고 정리 (Windows 는 WSACleanup 까지) */
+static void close_listener(sock_t s)
+{
+    closesocket(s);
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
+
 /* 연결 하나를 맡는 스레드의 진입점 */
-static DWORD WINAPI conn_thread(LPVOID arg)
+static void conn_thread(void *arg)
 {
     ConnArg *ca = (ConnArg *)arg;
-    DWORD timeout = SOCK_TIMEOUT_MS;
 
     db_thread_begin();   /* 이 스레드에서 MySQL 을 쓰기 전 초기화 */
     /* 수신/송신 시간 제한. 이것이 없으면 아무것도 안 보내는 클라이언트가 스레드를 영원히 붙잡는다. */
-    setsockopt(ca->sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof timeout);
-    setsockopt(ca->sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof timeout);
+    set_timeouts(ca->sock, SOCK_TIMEOUT_MS);
 
     handle_connection(ca->sock, ca->ip);
 
@@ -599,30 +643,35 @@ static DWORD WINAPI conn_thread(LPVOID arg)
     closesocket(ca->sock);
     db_thread_end();
     free(ca);                      /* http_serve 에서 calloc 한 인자를 여기서 해제 */
-    return 0;
 }
 
 /* 서버 메인 루프: 소켓을 열고 접속마다 스레드를 띄운다. 정상적으로는 돌아오지 않는다. */
 int http_serve(unsigned short port, int bind_all,
                void (*dispatch)(Request *, Response *))
 {
-    WSADATA wsa;
-    SOCKET listener;              /* 접속을 기다리는 소켓 */
+    sock_t listener;              /* 접속을 기다리는 소켓 */
     struct sockaddr_in addr;      /* IPv4 주소 + 포트 */
     int reuse = 1;
 
     g_dispatch = dispatch;
 
-    /* Winsock 2.2 초기화 (Windows 에서 소켓을 쓰기 전 필수) */
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        log_err("WSAStartup 실패");
-        return 0;
+#ifdef _WIN32
+    {
+        /* Winsock 2.2 초기화 (Windows 에서 소켓을 쓰기 전 필수) */
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+            log_err("WSAStartup 실패");
+            return 0;
+        }
     }
+#endif
 
     listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);   /* IPv4 TCP 소켓 */
     if (listener == INVALID_SOCKET) {
-        log_err("소켓 생성 실패 (%d)", WSAGetLastError());
+        log_err("소켓 생성 실패 (%d)", sock_errno());
+#ifdef _WIN32
         WSACleanup();
+#endif
         return 0;
     }
     /* 서버를 껐다 바로 켤 때 "주소가 이미 사용 중" 오류를 줄이기 위한 옵션 */
@@ -636,17 +685,21 @@ int http_serve(unsigned short port, int bind_all,
     addr.sin_port = htons(port);
 
     if (bind(listener, (struct sockaddr *)&addr, sizeof addr) == SOCKET_ERROR) {
+#ifdef _WIN32
         log_err("포트 %u 바인드 실패 (%d) - 이미 사용 중인지 확인하세요.",
-                port, WSAGetLastError());
-        closesocket(listener);
-        WSACleanup();
+                port, sock_errno());
+#else
+        /* 리눅스·맥에서 1024 미만 포트는 root 나 CAP_NET_BIND_SERVICE 권한이 있어야 열 수 있다 */
+        log_err("포트 %u 바인드 실패 (%s) - 이미 사용 중이거나, 1024 미만 포트라면 권한이 필요합니다 "
+                "(sudo, setcap 또는 --port 8080).", port, strerror(errno));
+#endif
+        close_listener(listener);
         return 0;
     }
     /* 접속 대기 시작. SOMAXCONN = 운영체제가 허용하는 최대 대기열 길이 */
     if (listen(listener, SOMAXCONN) == SOCKET_ERROR) {
-        log_err("listen 실패 (%d)", WSAGetLastError());
-        closesocket(listener);
-        WSACleanup();
+        log_err("listen 실패 (%d)", sock_errno());
+        close_listener(listener);
         return 0;
     }
 
@@ -658,13 +711,14 @@ int http_serve(unsigned short port, int bind_all,
     /* 무한 루프: 접속 수락 → 스레드 생성 */
     for (;;) {
         struct sockaddr_in peer;               /* 접속한 상대 주소 */
-        int peerlen = sizeof peer;
-        SOCKET s = accept(listener, (struct sockaddr *)&peer, &peerlen);   /* 접속이 올 때까지 블로킹 */
+        socklen_t peerlen = sizeof peer;
+        sock_t s = accept(listener, (struct sockaddr *)&peer, &peerlen);   /* 접속이 올 때까지 블로킹 */
         ConnArg *ca;
-        HANDLE th;
 
         if (s == INVALID_SOCKET) {
-            log_warn("accept 실패 (%d)", WSAGetLastError());
+            log_warn("accept 실패 (%d)", sock_errno());
+            /* 파일 디스크립터가 모자랄 때 같은 오류로 CPU 를 태우며 로그를 쏟지 않도록 잠깐 쉰다 */
+            sleep_ms(100);
             continue;
         }
 
@@ -677,15 +731,12 @@ int http_serve(unsigned short port, int bind_all,
         ca->sock = s;
         inet_ntop(AF_INET, &peer.sin_addr, ca->ip, sizeof ca->ip);   /* 이진 주소 → "1.2.3.4" */
 
-        th = CreateThread(NULL, 0, conn_thread, ca, 0, NULL);
-        if (!th) {
+        /* 기다리지 않는(detached) 스레드로 띄운다. 끝나면 스스로 정리된다. */
+        if (!thread_start(conn_thread, ca)) {
             log_warn("스레드 생성 실패");
             closesocket(s);
             free(ca);
             continue;
         }
-        /* 스레드 핸들을 닫아도 스레드는 계속 돈다. 기다릴(join) 필요가 없으므로
-         * 바로 닫아 핸들이 쌓이지 않게 한다(detach 와 같은 효과). */
-        CloseHandle(th);
     }
 }

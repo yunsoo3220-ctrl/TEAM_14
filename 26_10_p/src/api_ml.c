@@ -13,6 +13,7 @@
 #include "api.h"
 #include "db.h"
 #include "ml.h"
+#include "platform.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -203,7 +204,7 @@ static void handle_related(Request *req, Response *res)
     {
         time_t now = time(NULL);
         struct tm tmv;
-        localtime_s(&tmv, &now);
+        local_time(now, &tmv);
         strftime(today, sizeof today, "%Y-%m-%d", &tmv);
     }
 

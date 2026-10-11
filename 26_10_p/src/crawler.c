@@ -1,4 +1,4 @@
-/* 학교 홈페이지 공지 수집 (WinHTTP + WordPress REST API)
+/* 학교 홈페이지 공지 수집 (libcurl + WordPress REST API)
  *
  * 전체 흐름 (crawl_notices):
  *   1) 검색어마다, 페이지를 넘겨 가며 /wp-json/wp/v2/notice?search=검색어&after=기준일 을 받는다.
@@ -11,17 +11,16 @@
 #include "common.h"
 #include "json.h"
 #include "db.h"
+#include "net.h"
+#include "platform.h"
 
-#include <windows.h>
-#include <winhttp.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#define SKU_HOST   L"www.skuniv.ac.kr"
-#define USER_AGENT L"SKU-Contest-Board/1.0"
+#define SKU_HOST   "www.skuniv.ac.kr"
 
 /* 수집에 쓰는 검색어. 학교 검색은 본문까지 뒤지므로 결과를 제목으로 한 번 더 거른다. */
 static const char *KEYWORDS[] = {
@@ -87,20 +86,6 @@ static void url_encode(Buf *b, const char *s)
             buf_putc(b, hex[c & 0xF]);
         }
     }
-}
-
-/* UTF-8 -> UTF-16. 반환값은 호출자가 free. (WinHTTP 경로 인자용) */
-static wchar_t *utf8_to_wide(const char *s)
-{
-    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
-    wchar_t *w;
-
-    if (n <= 0)
-        return NULL;
-    w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-    if (w)
-        MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
-    return w;
 }
 
 /* HTML 엔티티를 원래 글자로 바꾼다 (제자리). 설명은 crawler.h 참고.
@@ -198,81 +183,30 @@ static void strip_tags(char *s)
  * HTTP 200 이 아니면 실패로 본다. */
 static int https_get(const char *path, Buf *out, char *err, size_t errsz)
 {
-    HINTERNET ses = NULL, con = NULL, req = NULL;
-    wchar_t *wpath = utf8_to_wide(path);
-    DWORD status = 0, statlen = sizeof status;
-    int ok = 0;
+    Buf url;
+    char why[200];
+    long status = 0;
+    int ok;
 
-    if (!wpath) {
-        str_copy(err, errsz, "경로 변환 실패");
+    buf_init(&url);
+    buf_printf(&url, "https://%s%s", SKU_HOST, path);
+    if (!url.data) {
+        str_copy(err, errsz, "주소 조립 실패");
         return 0;
     }
-
-    ses = WinHttpOpen(USER_AGENT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!ses) {
-        snprintf(err, errsz, "WinHttpOpen 실패 (%lu)", GetLastError());
-        goto done;
+    /* 접속 20초, 전체 60초 제한 */
+    ok = net_request("GET", url.data, "Accept: application/json\r\n", NULL, 20000, 60000, 0,
+                     out, &status, why, sizeof why);
+    buf_free(&url);
+    if (!ok) {
+        snprintf(err, errsz, "학교 홈페이지 요청 실패 (%s)", why);
+        return 0;
     }
-
-    /* 네 단계(이름 해석/접속/보내기/받기) 모두 20초 제한 */
-    {
-        DWORD to = 20000;
-        WinHttpSetTimeouts(ses, (int)to, (int)to, (int)to, (int)to);
-    }
-
-    con = WinHttpConnect(ses, SKU_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (!con) {
-        snprintf(err, errsz, "WinHttpConnect 실패 (%lu)", GetLastError());
-        goto done;
-    }
-
-    req = WinHttpOpenRequest(con, L"GET", wpath, NULL, WINHTTP_NO_REFERER,
-                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!req) {
-        snprintf(err, errsz, "WinHttpOpenRequest 실패 (%lu)", GetLastError());
-        goto done;
-    }
-
-    if (!WinHttpSendRequest(req, L"Accept: application/json\r\n", (DWORD)-1L,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(req, NULL)) {
-        snprintf(err, errsz, "학교 홈페이지 요청 실패 (%lu)", GetLastError());
-        goto done;
-    }
-
-    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &statlen, WINHTTP_NO_HEADER_INDEX);
     if (status != 200) {
-        snprintf(err, errsz, "학교 홈페이지가 HTTP %lu 를 반환했습니다.", status);
-        goto done;
+        snprintf(err, errsz, "학교 홈페이지가 HTTP %ld 를 반환했습니다.", status);
+        return 0;
     }
-
-    /* 본문을 조각조각 끝까지 읽는다 */
-    for (;;) {
-        DWORD avail = 0, read = 0;
-        char chunk[8192];
-
-        if (!WinHttpQueryDataAvailable(req, &avail)) {
-            snprintf(err, errsz, "응답 읽기 실패 (%lu)", GetLastError());
-            goto done;
-        }
-        if (avail == 0)
-            break;
-        if (avail > sizeof chunk)
-            avail = sizeof chunk;
-        if (!WinHttpReadData(req, chunk, avail, &read) || read == 0)
-            break;
-        buf_add(out, chunk, read);
-    }
-    ok = 1;
-
-done:
-    if (req) WinHttpCloseHandle(req);
-    if (con) WinHttpCloseHandle(con);
-    if (ses) WinHttpCloseHandle(ses);
-    free(wpath);
-    return ok;
+    return 1;
 }
 
 /* ------------------------------------------------------------- 공지 본문 */
@@ -636,7 +570,7 @@ static int publish_pending_notices(void)
          * (두 번째 공지부터 요청 사이에 0.2초 간격) */
         buf_init(&body);
         if (count)
-            Sleep(200);
+            sleep_ms(200);
         if (!notice_body_text(ext_id, &body))
             buf_printf(&body, "학교 공지 (%s, %s 게시)", keyword, date);
 
@@ -691,7 +625,7 @@ static void cutoff_iso(int window_days, char *out, size_t outsz)
     time_t t = time(NULL) - (time_t)window_days * 24 * 60 * 60;   /* 하루 = 86400초 */
     struct tm tmv;
 
-    localtime_s(&tmv, &t);
+    local_time(t, &tmv);
     strftime(out, outsz, "%Y-%m-%dT00:00:00", &tmv);
 }
 
@@ -813,7 +747,7 @@ int crawl_notices(int window_days, CrawlResult *out)
         time_t now = time(NULL);
         struct tm tmv;
 
-        localtime_s(&tmv, &now);
+        local_time(now, &tmv);
         strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
 
         buf_init(&sql);

@@ -1,4 +1,4 @@
-/* AI 게시물 분석 (Claude API + WinHTTP)
+/* AI 게시물 분석 (Claude API + libcurl)
  *
  * 한 게시물 분석의 흐름:
  *   1) DB 에서 게시물(제목, 본문, 게시일)과 학과 목록을 읽는다.
@@ -14,17 +14,15 @@
 #include "ai.h"
 #include "db.h"
 #include "json.h"
+#include "net.h"
+#include "platform.h"
 
-#include <windows.h>
-#include <winhttp.h>   /* Windows 내장 HTTPS 클라이언트 (TLS 를 OS 가 처리) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#define API_HOST      L"api.anthropic.com"
-#define API_PATH      L"/v1/messages"
-#define USER_AGENT    L"SKU-Contest-Board/1.0"
+#define API_URL       "https://api.anthropic.com/v1/messages"
 /* 분류 위주의 짧은 작업이라 non-streaming 기본값으로 충분하다. */
 #define MAX_TOKENS    16000   /* 응답 최대 토큰 수 */
 #define MAX_RETRIES   2       /* 실패 시 재시도 횟수 (최초 1회 + 재시도 2회 = 최대 3회) */
@@ -34,22 +32,22 @@
 
 /* ------------------------------------------------------------ 작업 상태 */
 
-static volatile LONG     g_init;       /* 0 = 미초기화, 1 = 초기화 중, 2 = 완료 */
-static CRITICAL_SECTION  g_lock;       /* g_status 보호 */
+static volatile long     g_init;       /* 0 = 미초기화, 1 = 초기화 중, 2 = 완료 */
+static Mutex             g_lock;       /* g_status 보호 */
 static AiStatus          g_status;     /* 백그라운드 작업 진행 상황 */
 
 /* g_lock 을 처음 쓰기 전에 딱 한 번 초기화한다 (여러 스레드가 동시에 불러도 안전).
  * 첫 스레드만 0→1 로 바꾸는 데 성공해 초기화하고 2 로 표시한다.
- * 그 사이 다른 스레드는 2 가 될 때까지 Sleep(0)(남은 시간 양보)으로 기다린다. */
+ * 그 사이 다른 스레드는 2 가 될 때까지 sleep_ms(0)(남은 시간 양보)으로 기다린다. */
 static void ensure_init(void)
 {
-    if (InterlockedCompareExchange(&g_init, 1, 0) == 0) {
-        InitializeCriticalSection(&g_lock);
+    if (atomic_cas(&g_init, 1, 0) == 0) {
+        mutex_init(&g_lock);
         memset(&g_status, 0, sizeof g_status);
-        InterlockedExchange(&g_init, 2);
+        atomic_swap(&g_init, 2);
     }
     while (g_init != 2)
-        Sleep(0);
+        sleep_ms(0);
 }
 
 /* API 키가 설정되어 있으면 1 */
@@ -64,29 +62,13 @@ int ai_enabled(void)
 void ai_status(AiStatus *out)
 {
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     *out = g_status;
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     out->enabled = ai_enabled();
 }
 
 /* ------------------------------------------------------------ 문자열 도우미 */
-
-/* UTF-8 → UTF-16(wchar_t). WinHTTP 의 헤더 인자는 와이드 문자열이어야 한다.
- * MultiByteToWideChar 를 두 번 부른다: 처음은 필요한 길이 계산, 두 번째는 실제 변환.
- * 호출자가 free. */
-static wchar_t *utf8_to_wide(const char *s)
-{
-    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);   /* -1: NUL 까지 포함한 길이 */
-    wchar_t *w;
-
-    if (n <= 0)
-        return NULL;
-    w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-    if (w)
-        MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
-    return w;
-}
 
 /* UTF-8 글자 중간을 피해 maxbytes 이하로 자른다. */
 static void utf8_cut(char *s, size_t maxbytes)
@@ -136,16 +118,12 @@ static int is_iso_date(const char *s)
 
 /* api.anthropic.com 에 body 를 POST 한다. 전송이 되면 1 (HTTP 상태와 무관),
  * 응답 본문은 out, 상태 코드는 status. */
-static int anthropic_post(const char *body, Buf *out, DWORD *status, char *err, size_t errsz)
+static int anthropic_post(const char *body, Buf *out, long *status, char *err, size_t errsz)
 {
-    HINTERNET ses = NULL, con = NULL, req = NULL;
-    DWORD statlen = sizeof *status;
-    DWORD len = (DWORD)strlen(body);
-    wchar_t *wheaders = NULL;
     Buf headers;
-    int ok = 0;
+    char why[200];
+    int ok;
 
-    *status = 0;
     /* 요청 헤더:
      *   x-api-key          인증 키 (환경변수에서 읽음 - 코드에 키를 적지 않는다)
      *   anthropic-version  API 버전 (응답 형식이 바뀌지 않도록 고정) */
@@ -157,77 +135,25 @@ static int anthropic_post(const char *body, Buf *out, DWORD *status, char *err, 
                /* 안전 분류기가 거절하면 Anthropic 이 권하는 모델로 같은 요청을 다시 돌린다. */
                "anthropic-beta: server-side-fallback-2026-07-01\r\n",
                getenv("ANTHROPIC_API_KEY"));
-    wheaders = utf8_to_wide(headers.data);
-    buf_free(&headers);
-    if (!wheaders) {
-        str_copy(err, errsz, "헤더 변환 실패");
+    if (!headers.data) {
+        str_copy(err, errsz, "헤더 조립 실패");
         return 0;
     }
 
-    /* AUTOMATIC_PROXY: 시스템(학교·회사 네트워크)의 프록시 설정을 자동으로 따른다 */
-    ses = WinHttpOpen(USER_AGENT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!ses) {
-        snprintf(err, errsz, "WinHttpOpen 실패 (%lu)", GetLastError());
-        goto done;
-    }
-    /* 분석 한 건이 수십 초 걸릴 수 있어 넉넉히 둔다.
-     * (이름 해석 15초, 접속 15초, 보내기 30초, 받기 180초) */
-    WinHttpSetTimeouts(ses, 15000, 15000, 30000, 180000);
-
-    con = WinHttpConnect(ses, API_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);   /* 443 포트 */
-    if (!con) {
-        snprintf(err, errsz, "WinHttpConnect 실패 (%lu)", GetLastError());
-        goto done;
-    }
-    /* WINHTTP_FLAG_SECURE = HTTPS (TLS 암호화) */
-    req = WinHttpOpenRequest(con, L"POST", API_PATH, NULL, WINHTTP_NO_REFERER,
-                             WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!req) {
-        snprintf(err, errsz, "WinHttpOpenRequest 실패 (%lu)", GetLastError());
-        goto done;
-    }
-
-    if (!WinHttpSendRequest(req, wheaders, (DWORD)-1L, (LPVOID)body, len, len, 0) ||
-        !WinHttpReceiveResponse(req, NULL)) {
-        snprintf(err, errsz, "Claude API 요청 실패 (%lu)", GetLastError());
-        goto done;
-    }
-
-    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, status, &statlen, WINHTTP_NO_HEADER_INDEX);
-
-    /* 응답 본문을 끝까지 읽는다 (embed.c 의 local_call 과 같은 방식) */
-    for (;;) {
-        DWORD avail = 0, got = 0;
-        char chunk[8192];
-
-        if (!WinHttpQueryDataAvailable(req, &avail)) {
-            snprintf(err, errsz, "응답 읽기 실패 (%lu)", GetLastError());
-            goto done;
-        }
-        if (avail == 0)
-            break;
-        if (avail > sizeof chunk)
-            avail = sizeof chunk;
-        if (!WinHttpReadData(req, chunk, avail, &got) || got == 0)
-            break;
-        buf_add(out, chunk, got);
-    }
-    ok = 1;
-
-done:
-    if (req) WinHttpCloseHandle(req);
-    if (con) WinHttpCloseHandle(con);
-    if (ses) WinHttpCloseHandle(ses);
-    free(wheaders);
+    /* 분석 한 건이 수십 초 걸릴 수 있어 넉넉히 둔다 (접속 15초, 전체 210초).
+     * 프록시는 환경변수(https_proxy 등)가 있으면 따른다. */
+    ok = net_request("POST", API_URL, headers.data, body, 15000, 210000, 0,
+                     out, status, why, sizeof why);
+    if (!ok)
+        snprintf(err, errsz, "Claude API 요청 실패 (%s)", why);
+    buf_free(&headers);
     return ok;
 }
 
 /* 잠시 뒤 다시 시도하면 성공할 수 있는 상태 코드인지
  *   429 요청이 너무 많음(속도 제한), 500/502/503/504 서버 쪽 일시 오류, 529 과부하
  * 400(요청 형식 오류)이나 401(키 오류)은 다시 보내도 같으므로 재시도하지 않는다. */
-static int retryable(DWORD status)
+static int retryable(long status)
 {
     return status == 429 || status == 500 || status == 502 || status == 503 ||
            status == 504 || status == 529;
@@ -361,7 +287,7 @@ typedef struct {
 /* Claude 응답 전체(JSON)에서 구조화 출력 텍스트를 꺼낸다. 호출자가 json_free.
  * 응답 모양: {"content":[{"type":"text","text":"{...결과 JSON...}"}],
  *             "stop_reason":"end_turn","usage":{"input_tokens":..,"output_tokens":..}} */
-static Json *extract_result(const char *resp, DWORD status, char *err, size_t errsz)
+static Json *extract_result(const char *resp, long status, char *err, size_t errsz)
 {
     Json *root = json_parse(resp ? resp : "");
     const Json *content;
@@ -371,14 +297,14 @@ static Json *extract_result(const char *resp, DWORD status, char *err, size_t er
     int i;
 
     if (!root || root->type != JS_OBJ) {
-        snprintf(err, errsz, "Claude API 응답을 해석할 수 없습니다 (HTTP %lu).", status);
+        snprintf(err, errsz, "Claude API 응답을 해석할 수 없습니다 (HTTP %ld).", status);
         json_free(root);
         return NULL;
     }
     /* 오류 응답은 {"error":{"type":..,"message":..}} 형태 */
     if (status != 200) {
         const Json *m = json_path(root, "error", "message");
-        snprintf(err, errsz, "Claude API 오류 (HTTP %lu): %s", status,
+        snprintf(err, errsz, "Claude API 오류 (HTTP %ld): %s", status,
                  m && m->type == JS_STR ? m->str : "알 수 없는 오류");
         json_free(root);
         return NULL;
@@ -573,7 +499,7 @@ static int analyze_with(unsigned post_id, const DeptTable *t, const char *system
     MYSQL_ROW row;
     Buf sql, user, req, resp;
     Json *result = NULL;
-    DWORD status = 0;
+    long status = 0;
     const char *kind_ko = "공모전";
     int attempt, ok = 0, i;
 
@@ -622,9 +548,9 @@ static int analyze_with(unsigned post_id, const DeptTable *t, const char *system
         if (anthropic_post(req.data, &resp, &status, err, errsz) && !retryable(status))
             break;
         if (attempt < MAX_RETRIES) {
-            log_warn("Claude API 재시도 %d (게시물 %u, HTTP %lu) %s",
+            log_warn("Claude API 재시도 %d (게시물 %u, HTTP %ld) %s",
                      attempt + 1, post_id, status, err);
-            Sleep(attempt == 0 ? 3000 : 10000);
+            sleep_ms(attempt == 0 ? 3000 : 10000);
         }
     }
     buf_free(&req);
@@ -708,17 +634,17 @@ static int run_job(int force)
     Buf system_prompt;
 
     /* 상태 초기화 */
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     g_status.running = 1;
     g_status.total = g_status.done = g_status.failed = 0;
     g_status.last_error[0] = '\0';
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
 
     buf_init(&system_prompt);
     if (!load_departments(&t)) {
-        EnterCriticalSection(&g_lock);
+        mutex_lock(&g_lock);
         str_copy(g_status.last_error, sizeof g_status.last_error, "학과 목록을 읽을 수 없습니다.");
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         goto finish;
     }
     build_system_prompt(&system_prompt, &t);
@@ -745,23 +671,23 @@ static int run_job(int force)
             break;
         }
 
-        EnterCriticalSection(&g_lock);
+        mutex_lock(&g_lock);
         g_status.total += todo;
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         log_info("AI 분석 시작: %d건", todo);
 
         for (i = 0; i < todo; i++) {
             char err[256];
             int ok = analyze_with(ids[i], &t, system_prompt.data, err, sizeof err);   /* 수 초~수십 초 */
 
-            EnterCriticalSection(&g_lock);
+            mutex_lock(&g_lock);
             if (ok) {
                 g_status.done++;
             } else {
                 g_status.failed++;
                 str_copy(g_status.last_error, sizeof g_status.last_error, err);
             }
-            LeaveCriticalSection(&g_lock);
+            mutex_unlock(&g_lock);
 
             if (!ok) {
                 log_warn("AI 분석 실패: 게시물 %u - %s", ids[i], err);
@@ -780,49 +706,44 @@ finish:
         struct tm tmv;
         int failed;
 
-        localtime_s(&tmv, &now);
-        EnterCriticalSection(&g_lock);
+        local_time(now, &tmv);
+        mutex_lock(&g_lock);
         strftime(g_status.finished_at, sizeof g_status.finished_at, "%Y-%m-%d %H:%M:%S", &tmv);
         g_status.running = 0;
         failed = g_status.failed;
         log_info("AI 분석 끝: 성공 %d, 실패 %d", g_status.done, g_status.failed);
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return failed;
     }
 }
 
-static volatile LONG g_busy;     /* 작업이 하나만 돌도록 */
+static volatile long g_busy;     /* 작업이 하나만 돌도록 */
 
 /* 백그라운드 스레드 진입점. arg 는 force 값(정수)을 포인터 크기로 바꿔 넘긴 것이다. */
-static DWORD WINAPI worker(LPVOID arg)
+static void worker(void *arg)
 {
     db_thread_begin();               /* 새 스레드라 MySQL 스레드 초기화 필요 */
-    run_job((int)(INT_PTR)arg);
+    run_job((int)(intptr_t)arg);
     db_thread_end();
-    InterlockedExchange(&g_busy, 0); /* 작업 끝 - 다음 작업을 받을 수 있게 */
-    return 0;
+    atomic_swap(&g_busy, 0);         /* 작업 끝 - 다음 작업을 받을 수 있게 */
 }
 
 /* 백그라운드 분석 시작. 설명은 ai.h 참고. */
 int ai_start_background(int force)
 {
-    HANDLE th;
-
     ensure_init();
     if (!ai_enabled())
         return -1;
     /* g_busy 가 0 이면 1 로 바꾸고 진행, 이미 1 이면 다른 작업이 돌고 있으므로 0 을 돌려준다.
      * 비교와 교환이 원자적이라 두 요청이 동시에 와도 하나만 시작한다. */
-    if (InterlockedCompareExchange(&g_busy, 1, 0) != 0)
+    if (atomic_cas(&g_busy, 1, 0) != 0)
         return 0;
 
-    th = CreateThread(NULL, 0, worker, (LPVOID)(INT_PTR)force, 0, NULL);
-    if (!th) {
-        InterlockedExchange(&g_busy, 0);
-        log_err("AI 분석 스레드를 만들 수 없습니다 (%lu)", GetLastError());
+    if (!thread_start(worker, (void *)(intptr_t)force)) {
+        atomic_swap(&g_busy, 0);
+        log_err("AI 분석 스레드를 만들 수 없습니다");
         return 0;
     }
-    CloseHandle(th);   /* 기다리지 않으므로 핸들은 바로 닫는다 */
     return 1;
 }
 
@@ -836,9 +757,9 @@ int ai_run_sync(int force)
         log_err("ANTHROPIC_API_KEY 가 설정되지 않아 AI 분석을 할 수 없습니다.");
         return -1;
     }
-    if (InterlockedCompareExchange(&g_busy, 1, 0) != 0)
+    if (atomic_cas(&g_busy, 1, 0) != 0)
         return -1;
     failed = run_job(force);
-    InterlockedExchange(&g_busy, 0);
+    atomic_swap(&g_busy, 0);
     return failed;
 }

@@ -1,4 +1,4 @@
-/* 최소한의 HTTP/1.1 서버 (Winsock2).
+/* 최소한의 HTTP/1.1 서버 (Windows: Winsock2, 리눅스·맥: BSD 소켓).
  * 요청마다 스레드를 만들어 처리하고, 라우팅은 dispatch 콜백에 맡긴다.
  *
  * 동작 흐름:

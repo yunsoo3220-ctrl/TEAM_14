@@ -1,4 +1,4 @@
-/* 딥러닝 문장 임베딩 클라이언트 (WinHTTP -> ml/embed_server.py). 설명은 embed.h 참고.
+/* 딥러닝 문장 임베딩 클라이언트 (libcurl -> ml/embed_server.py). 설명은 embed.h 참고.
  *
  * 통신 규약 (embed_server.py 와 맞춰야 함):
  *   POST /embed   요청 {"kind":"passage"|"query", "texts":["...", ...]}
@@ -11,9 +11,9 @@
 #include "embed.h"
 #include "common.h"
 #include "json.h"
+#include "net.h"
+#include "platform.h"
 
-#include <windows.h>
-#include <winhttp.h>   /* Windows 내장 HTTP 클라이언트 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,90 +22,46 @@
 #define HEALTH_TTL_MS  30000       /* /health 결과를 기억하는 시간 (30초) */
 
 /* 임베딩 서비스 포트: 환경변수 SKU_EMBED_PORT, 없거나 이상하면 8001 */
-static INTERNET_PORT embed_port(void)
+static unsigned embed_port(void)
 {
     const char *p = getenv("SKU_EMBED_PORT");
     int n = p ? atoi(p) : 0;
-    return (INTERNET_PORT)(n > 0 && n < 65536 ? n : 8001);
+    return (unsigned)(n > 0 && n < 65536 ? n : 8001);
 }
 
 /* 127.0.0.1 에 요청을 보낸다. 응답을 받으면 1 (HTTP 상태와 무관).
- *   method/path   : L"POST", L"/embed" 처럼 와이드 문자열 (WinHTTP 는 UTF-16 API)
+ *   method/path   : "POST", "/embed"
  *   body          : 보낼 JSON (NULL 이면 본문 없음)
  *   recv_timeout  : 응답을 기다릴 최대 시간(ms)
  *   out           : 응답 본문을 붙일 버퍼
  *   status        : HTTP 상태 코드를 받을 곳 */
-static int local_call(const wchar_t *method, const wchar_t *path, const char *body,
-                      DWORD recv_timeout, Buf *out, DWORD *status)
+static int local_call(const char *method, const char *path, const char *body,
+                      long recv_timeout, Buf *out, long *status)
 {
-    HINTERNET ses = NULL, con = NULL, req = NULL;   /* 세션 → 연결 → 요청, 3단계 핸들 */
-    DWORD len = body ? (DWORD)strlen(body) : 0;
-    DWORD statlen = sizeof *status;
-    int ok = 0;
+    char url[64];
 
-    *status = 0;
-    /* 로컬 호출이므로 프록시를 쓰지 않는다(회사/학교 프록시 설정이 있어도 우회). */
-    ses = WinHttpOpen(L"SKU-Contest-Board/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
-                      WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!ses)
-        return 0;
-    /* 시간 제한: 이름 해석 2초, 접속 2초, 보내기 30초, 받기 recv_timeout.
-     * 서비스가 꺼져 있으면 접속이 2초 안에 실패해 서버가 오래 멈추지 않는다. */
-    WinHttpSetTimeouts(ses, 2000, 2000, 30000, (int)recv_timeout);
-    con = WinHttpConnect(ses, L"127.0.0.1", embed_port(), 0);
-    if (con)
-        req = WinHttpOpenRequest(con, method, path, NULL, WINHTTP_NO_REFERER,
-                                 WINHTTP_DEFAULT_ACCEPT_TYPES, 0);   /* 플래그 0 = 평문 HTTP */
-    if (!req)
-        goto done;
-    /* 요청 전송 후 응답 헤더까지 받는다. (DWORD)-1L 은 "헤더 문자열 길이를 알아서 재라" 는 뜻 */
-    if (!WinHttpSendRequest(req, body ? L"Content-Type: application/json\r\n" : WINHTTP_NO_ADDITIONAL_HEADERS,
-                            (DWORD)-1L, (LPVOID)body, len, len, 0) ||
-        !WinHttpReceiveResponse(req, NULL))
-        goto done;
-    /* 상태 코드를 숫자로 받는다 (FLAG_NUMBER 가 없으면 문자열로 온다) */
-    WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, status, &statlen, WINHTTP_NO_HEADER_INDEX);
-    /* 본문은 조각(chunk)으로 나뉘어 오므로, 더 받을 게 없을 때까지 반복해 읽는다 */
-    for (;;) {
-        DWORD avail = 0, got = 0;
-        char chunk[16384];   /* 한 번에 최대 16KB 씩 */
-
-        if (!WinHttpQueryDataAvailable(req, &avail))
-            goto done;
-        if (avail == 0)      /* 0 = 본문 끝 */
-            break;
-        if (avail > sizeof chunk)
-            avail = sizeof chunk;
-        if (!WinHttpReadData(req, chunk, avail, &got) || got == 0)
-            break;
-        buf_add(out, chunk, got);
-    }
-    ok = 1;
-
-done:
-    /* goto 정리 패턴: 어디서 실패하든 연 핸들은 역순으로 모두 닫는다 */
-    if (req) WinHttpCloseHandle(req);
-    if (con) WinHttpCloseHandle(con);
-    if (ses) WinHttpCloseHandle(ses);
-    return ok;
+    snprintf(url, sizeof url, "http://127.0.0.1:%u%s", embed_port(), path);
+    /* 접속 2초 제한: 서비스가 꺼져 있으면 금방 실패해 서버가 오래 멈추지 않는다.
+     * 로컬 호출이므로 프록시를 쓰지 않는다(회사/학교 프록시 설정이 있어도 우회). */
+    return net_request(method, url, body ? "Content-Type: application/json\r\n" : NULL, body,
+                       2000, 2000 + recv_timeout, 1, out, status, NULL, 0);
 }
 
 /* 서비스 상태가 바뀔 때만 로그를 남긴다.
  * -1 = 아직 모름, 0 = 안 됨, 1 = 됨. 요청마다 "안 됩니다" 로그가 쌓이는 것을 막는다. */
-static volatile LONG g_last_ok = -1;
+static volatile long g_last_ok = -1;
 
 static void note_state(int ok, const char *why)
 {
-    /* InterlockedExchange 는 새 값을 넣고 "이전 값" 을 원자적으로 돌려준다.
+    /* atomic_swap 은 새 값을 넣고 "이전 값" 을 원자적으로 돌려준다.
      * 이전 값이 지금과 같으면 상태가 안 바뀐 것이므로 조용히 돌아간다. */
-    if (InterlockedExchange(&g_last_ok, ok) == ok)
+    if (atomic_swap(&g_last_ok, (long)ok) == ok)
         return;
     if (ok)
         log_info("임베딩 서비스 연결됨 (127.0.0.1:%u)", (unsigned)embed_port());
     else
         log_warn("임베딩 서비스를 쓸 수 없어 TF-IDF 만으로 추천합니다 (%s). "
-                 "ml\\embed_server.py 를 띄우세요.", why);
+                 "ml/embed_server.py 를 띄우세요.", why);
 }
 
 /* base64 문자 하나 → 0~63 값. base64 문자가 아니면 -1. */
@@ -165,7 +121,7 @@ int embed_texts(const char *kind, const char *const *texts, int n, float **out,
                 char *model, size_t modelsz)
 {
     Buf req, resp;          /* 요청 JSON, 응답 본문 */
-    DWORD status = 0;
+    long status = 0;
     Json *root = NULL;      /* 파싱한 응답 */
     const char *data;       /* 응답의 base64 벡터 문자열 */
     float *vecs = NULL;     /* 디코딩한 벡터 (성공 시 호출자에게 넘김) */
@@ -206,7 +162,7 @@ int embed_texts(const char *kind, const char *const *texts, int n, float **out,
     /* 2) 요청 전송
      * 처음 한 번은 전체 글을 계산하느라 오래 걸릴 수 있다. 다음부터는 캐시에서 바로 온다.
      * (그래서 받기 제한을 300초로 넉넉히 준다) */
-    if (!local_call(L"POST", L"/embed", req.data, 300000, &resp, &status)) {
+    if (!local_call("POST", "/embed", req.data, 300000, &resp, &status)) {
         note_state(0, "연결 실패");
         goto fail;
     }
@@ -259,11 +215,11 @@ fail:
 /* 임베딩 서비스가 떠 있는지 확인한다. 결과를 30초 동안 캐시한다. */
 int embed_available(void)
 {
-    static volatile LONG     cached = 0;       /* 마지막 확인 결과 */
-    static volatile ULONGLONG checked_at = 0;  /* 마지막 확인 시각 (부팅 후 ms) */
-    ULONGLONG now = GetTickCount64();          /* 64비트 틱 카운트 - 49일 넘게 켜도 되돌아가지 않음 */
+    static volatile long     cached = 0;       /* 마지막 확인 결과 */
+    static volatile uint64_t checked_at = 0;   /* 마지막 확인 시각 (단조 시계 ms) */
+    uint64_t now = tick_ms();                  /* 64비트 ms - 오래 켜 둬도 되돌아가지 않음 */
     Buf resp;
-    DWORD status = 0;
+    long status = 0;
     int ok;
 
     /* 캐시가 유효하면 바로 돌려준다 */
@@ -272,9 +228,9 @@ int embed_available(void)
 
     /* /health 에 3초 제한으로 물어본다. 동시에 여러 스레드가 확인해도 결과만 덮어쓰므로 무해하다. */
     buf_init(&resp);
-    ok = local_call(L"GET", L"/health", NULL, 3000, &resp, &status) && status == 200;
+    ok = local_call("GET", "/health", NULL, 3000, &resp, &status) && status == 200;
     buf_free(&resp);
-    InterlockedExchange(&cached, ok);
+    atomic_swap(&cached, (long)ok);
     checked_at = now;
     return ok;
 }

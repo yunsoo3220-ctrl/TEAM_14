@@ -9,9 +9,10 @@
  */
 #include "mailer.h"
 #include "common.h"
+#include "net.h"         /* net_init - curl 전역 초기화 */
+#include "platform.h"    /* utc_time */
 
 #include <curl/curl.h>   /* libcurl - SMTP/TLS 처리 */
-#include <windows.h>     /* InterlockedCompareExchange */
 #include <stdio.h>
 #include <stdlib.h>      /* getenv */
 #include <string.h>
@@ -97,7 +98,6 @@ int mail_send(const char *to, const char *subject, const char *text, char *err, 
 {
     const char *url = env("SKU_SMTP_URL"), *user = env("SKU_SMTP_USER"), *pass = env("SKU_SMTP_PASS");
     const char *from = env("SKU_SMTP_FROM") ? env("SKU_SMTP_FROM") : user;   /* 보내는 주소 기본값 = 로그인 계정 */
-    static volatile LONG inited;     /* curl_global_init 을 했는지 (프로그램 전체에서 한 번) */
     Buf msg, rcpt_addr;              /* msg: 메일 원문, rcpt_addr: "<받는주소>" */
     char date[64], id[24];           /* Date 헤더 값, Message-ID 의 난수 부분 */
     struct curl_slist *rcpt = NULL;  /* 받는 사람 목록 (curl 연결 리스트) */
@@ -132,7 +132,7 @@ int mail_send(const char *to, const char *subject, const char *text, char *err, 
     /* 3) 헤더 값 준비
      * Date 헤더는 RFC 5322 형식 "Thu, 09 Oct 2026 05:03:12 +0000". UTC(gmtime)로 써서
      * 시간대 계산 문제를 피한다. Message-ID 는 메일마다 고유해야 하므로 난수로 만든다. */
-    gmtime_s(&g, &now);
+    utc_time(now, &g);
     strftime(date, sizeof date, "%a, %d %b %Y %H:%M:%S +0000", &g);
     if (!random_hex(id, 16))
         str_copy(id, sizeof id, "0");   /* Message-ID 는 보안 값이 아니므로 실패해도 진행 */
@@ -148,10 +148,9 @@ int mail_send(const char *to, const char *subject, const char *text, char *err, 
     buf_puts(&msg, "\r\n");
 
     /* 5) libcurl 준비
-     * curl_global_init 은 스레드 안전하지 않고 한 번만 불러야 한다. 여러 요청 스레드가
-     * 동시에 들어와도 처음 한 스레드만 0→1 로 바꾸는 데 성공해 초기화를 한다(원자적 비교-교환). */
-    if (InterlockedCompareExchange(&inited, 1, 0) == 0)
-        curl_global_init(CURL_GLOBAL_DEFAULT);
+     * curl_global_init 은 스레드 안전하지 않고 한 번만 불러야 한다. net_init 이 처음 한 번만
+     * 초기화한다 (서버 모드에서는 main 이 스레드를 만들기 전에 이미 불러 둔다). */
+    net_init();
     c = curl_easy_init();   /* 이번 발송 한 건에 쓸 핸들 */
     if (!c) {
         buf_free(&msg);

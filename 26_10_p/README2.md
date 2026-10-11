@@ -5,13 +5,17 @@
 
 - 언어: C (C11)
 - DB: MySQL 8.x
-- 서버: 직접 구현한 HTTP/1.1 서버 (Winsock2) + 정적 파일 제공
-- 공지 수집: 학교 홈페이지 WordPress REST API (Windows 내장 WinHTTP)
+- 서버: 직접 구현한 HTTP/1.1 서버 (Windows: Winsock2, 리눅스·맥: BSD 소켓) + 정적 파일 제공
+- 공지 수집: 학교 홈페이지 WordPress REST API (libcurl)
+- 실행 환경: Windows(MSYS2), 리눅스, macOS — 리눅스·맥은 [서버실행방법-리눅스.md](서버실행방법-리눅스.md)
 - 화면: 의존성 없는 HTML/CSS/JS
 
 ---
 
 ## 1. 준비물
+
+리눅스·맥은 `scripts/setup-linux.sh` 가 아래를 모두 해 준다 → [서버실행방법-리눅스.md](서버실행방법-리눅스.md).
+이 절부터는 Windows 기준이다.
 
 | 항목 | 설치 |
 | --- | --- |
@@ -131,22 +135,14 @@ SKU_DB_PASS=<root 비밀번호> python scripts/make_admin.py 20250001 운영자 
 
 ## 5. 주소 연결 (www.sku14.com)
 
-이 서버는 `www.sku14.com` 을 기준 주소로 쓴다. 그 이름이 이 PC를 가리키도록
-hosts 파일에 두 줄을 넣어야 한다. 아래 스크립트를 **관리자 권한 PowerShell** 에서
-실행하면 알아서 넣어준다.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\setup-domain.ps1
-```
-
-넣는 내용은 이것뿐이다 (`C:\Windows\System32\drivers\etc\hosts`).
+이 서버는 `www.sku14.com` 을 기준 주소로 쓴다. 그 이름이 이 컴퓨터를 가리키도록
+hosts 파일에 두 줄을 넣는다 (리눅스·맥: `/etc/hosts`, Windows: `C:\Windows\System32\drivers\etc\hosts`).
+리눅스·맥은 `scripts/setup-linux.sh --hosts` 가 넣어 준다.
 
 ```
-127.0.0.1	www.sku14.com	# sku-contest-board
-127.0.0.1	sku14.com	# sku-contest-board
+127.0.0.1	www.sku14.com
+127.0.0.1	sku14.com
 ```
-
-되돌리려면 `-Remove` 를 붙여 다시 실행한다.
 
 > 이 설정은 **이 PC 안에서만** 유효하다. 인터넷에서 누구나 `www.sku14.com` 으로
 > 들어오게 하려면 실제로 `sku14.com` 도메인을 등록기관에서 구입해 A 레코드를
@@ -155,18 +151,17 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-domain.ps1
 
 ## 6. 실행
 
-> 명령어 없이 더블클릭으로 켜고 끄려면 `서버켜기.bat` / `서버끄기.bat` 을 쓴다.
-> 자세한 내용은 [서버실행방법.md](서버실행방법.md).
+> 리눅스·맥에서 켜고 끄기, 계속 켜 두기(systemd 서비스)는 [서버실행방법-리눅스.md](서버실행방법-리눅스.md).
 
 ```sh
-SKU_DB_PASS=<root 비밀번호> ./server.exe
+scripts/run-server.sh --port 8080                    # 리눅스·맥 (db.env·smtp.env 를 읽는다)
 ```
 ```powershell
-$env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe
+$env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe     # Windows
 ```
 
-브라우저에서 <http://www.sku14.com> 을 연다. 80 포트는 관리자 권한이 필요할 수 있다.
-권한 없이 쓰려면 `--port 8080` 으로 띄우고 <http://www.sku14.com:8080> 으로 접속한다.
+브라우저에서 <http://www.sku14.com:8080> (Windows 기본 포트는 80) 을 연다.
+80 포트는 관리자(root) 권한이 필요하다. 리눅스에서는 서비스로 등록하면 80 으로 뜬다.
 
 `sku14.com` (www 없이) 으로 들어온 요청은 `www.sku14.com` 으로 301 리다이렉트된다.
 `127.0.0.1` 이나 `localhost` 로 들어온 요청은 그대로 처리한다.
@@ -221,7 +216,7 @@ $env:SKU_DB_PASS="<root 비밀번호>"; .\server.exe
 만들어 위 모델에 더한다. "AI 숏폼"과 "미디어영상학과"처럼 글자가 겹치지 않아도 연결된다.
 
 ```
-ml/embed_server.py  (Python, 127.0.0.1:8001)  ← WinHTTP ←  src/embed.c  ←  src/ml.c
+ml/embed_server.py  (Python, 127.0.0.1:8001)  ← libcurl ←  src/embed.c  ←  src/ml.c
 ```
 
 - 게시물은 `passage`, 학과 프로필·관심사는 `query` 로 임베딩한다. 결과는 `ml/cache/` 의 SQLite 에
@@ -235,14 +230,18 @@ ml/embed_server.py  (Python, 127.0.0.1:8001)  ← WinHTTP ←  src/embed.c  ← 
 
 설치 (한 번, 약 1GB):
 
+```sh
+scripts/setup-linux.sh --skip-packages --with-embed      # 리눅스·맥
+```
 ```powershell
-python -m venv ml\.venv
+python -m venv ml\.venv                                  # Windows
 ml\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cpu
 ml\.venv\Scripts\python.exe -m pip install sentence-transformers pymysql
 ```
 
-`scripts\start-server.ps1` 은 `ml\.venv` 가 있으면 임베딩 서비스를 함께 띄운다 (`-NoEmbed` 로 끈다).
-처음 실행할 때 모델(약 470MB)을 내려받는다. 따로 띄우려면 `ml\.venv\Scripts\python.exe ml\embed_server.py`.
+`scripts/start-server.sh` 와 `scripts/install-service.sh` 는 `ml/.venv` 가 있으면 임베딩 서비스를 함께 띄운다
+(`start-server.sh --no-embed` 로 끈다). 처음 실행할 때 모델(약 470MB)을 내려받는다.
+따로 띄우려면 `ml/.venv/bin/python ml/embed_server.py` (Windows: `ml\.venv\Scripts\python.exe ml\embed_server.py`).
 
 **미세조정** — 관리자 체크와 댓글로 쌓인 정답 쌍으로 모델을 대조학습한다. 게시물의 20%를 떼어 두고
 Recall@5·MRR 을 사전학습 모델과 비교해, 나아졌을 때만 `ml/models/finetuned` 에 저장한다.
@@ -333,13 +332,14 @@ SKU_SMTP_PASS=앱비밀번호16자리                   # Gmail 은 2단계 인�
 SKU_SMTP_FROM=보내는계정@gmail.com
 ```
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\send-test-mail.ps1 -To 학번@skuniv.ac.kr   # 설정 시험
-powershell -ExecutionPolicy Bypass -File scripts\start-server.ps1 -Port 8080 -NoAdmin       # smtp.env 를 읽어 띄움
+```sh
+scripts/run-server.sh --test-mail 학번@skuniv.ac.kr      # 설정 시험
+scripts/start-server.sh                                  # smtp.env 를 읽어 띄움
 ```
 
 메일 서버가 설정되지 않으면 인증 코드 요청은 `503 mail_not_configured` 로 거절된다 (가입 불가).
-시험할 때만 `SKU_MAIL_DEV=1` 을 주면 메일 대신 서버 로그(`logs\server.err.log`)에 코드를 남기는 개발 모드가 된다.
+시험할 때만 `SKU_MAIL_DEV=1` 을 주면 메일 대신 서버 로그(`logs/server.err.log`, 서비스로 띄웠으면 `journalctl -u sku14`)에
+코드를 남기는 개발 모드가 된다.
 API 응답에는 어떤 경우에도 코드가 실리지 않는다. 기존 DB 에는 `sql/10_email_verify.sql` 을 적용한다.
 
 ```
@@ -471,16 +471,18 @@ HTML 을 긁는 대신 이 API 를 쓰면 제목·날짜·링크를 그대로 �
 ```
 src/
   main.c         진입점, 명령행 옵션, 기동 점검
-  http.c/.h      Winsock HTTP 서버, 요청 파싱, 응답 조립
+  http.c/.h      HTTP 서버 (Winsock / BSD 소켓), 요청 파싱, 응답 조립
   api.c/.h       라우팅, 정적 파일, 가입·로그인·세션, 학과 목록
   api_posts.c    게시물 목록/상세, 댓글, 댓글 권한 판정
   api_admin.c    게시물 등록/삭제, 공지 수집·게시
   db.c/.h        MySQL 연결, SQL 조립(%Q 이스케이프), 트랜잭션
-  crawler.c/.h   WinHTTP 로 학교 공지 수집, 공지 본문 HTML -> 텍스트
+  crawler.c/.h   학교 공지 수집, 공지 본문 HTML -> 텍스트
   ai.c/.h        Claude API 로 게시물 분석 (백그라운드 작업)
   api_ai.c       AI 추천·분석 관리 API
   ml.c/.h        자체 추천 모델 (딥러닝 임베딩 + TF-IDF + Rocchio, 외부 API 없음)
-  embed.c/.h     임베딩 서비스 클라이언트 (WinHTTP → 127.0.0.1:8001)
+  embed.c/.h     임베딩 서비스 클라이언트 (→ 127.0.0.1:8001)
+  net.c/.h       바깥으로 나가는 HTTP(S) 요청 (libcurl)
+  platform.c/.h  OS 차이 (잠금, 스레드, 시간, 난수) - Windows / 리눅스 / 맥
   api_ml.c       학과별 추천 API
   api_community.c 관심 키워드·프로필·팀원 찾기·팀원 모집 게시판 API
   api_study.c    그룹 스터디·멤버·멘토/멘티 API
@@ -494,11 +496,15 @@ sql/
 www/
   index.html, style.css, app.js
 scripts/
-  setup-domain.ps1           hosts 에 www.sku14.com 등록 / 제거
-  start-server.ps1           서버 기동/중지 (로그를 logs/ 에 남긴다)
+  setup-linux.sh             리눅스·맥 첫 준비 (패키지, 빌드, DB, db.env, hosts)
+  env.sh                     db.env·smtp.env·ai.env 읽기 (다른 스크립트가 불러 씀)
+  run-server.sh              env 파일을 읽어 server 실행
+  start-server.sh            백그라운드 기동/중지 (로그를 logs/ 에 남긴다)
+  install-service.sh         리눅스 systemd 서비스 등록 (부팅 시 자동 시작)
   make_admin.py              exe 없이 관리자 계정 만들기 (--add-admin 과 동일한 해시)
+  seed_demo.py               시연용 가상 회원·모집글
 logs/
-  server.err.log             서버 로그 (start-server.ps1 로 띄웠을 때)
+  server.err.log             서버 로그 (start-server.sh 로 띄웠을 때)
 ```
 
 ## 11. 설계 메모
@@ -550,5 +556,4 @@ Smart App Control 이 켜져 있어(enforce) 서명되지 않은 실행 파일�
 2. SAC 가 꺼져 있는 다른 Windows PC에서 빌드해 실행한다.
 3. 코드 서명 인증서로 `server.exe` 에 서명한다.
 
-리눅스에서 돌릴 경우 고쳐야 할 부분은 `src/http.c`(Winsock → BSD 소켓),
-`src/crawler.c`(WinHTTP → libcurl), `localtime_s`/`_strnicmp` 정도다.
+4. 리눅스나 맥에서 돌린다. 같은 소스가 그대로 빌드된다 → [서버실행방법-리눅스.md](서버실행방법-리눅스.md)

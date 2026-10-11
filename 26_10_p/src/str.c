@@ -6,16 +6,13 @@
  *   - 메모리가 부족하면 로그만 남기고 조용히 실패한다(서버 전체를 멈추지 않음).
  */
 #include "common.h"
-
-/* rand_s() 를 쓰기 위한 선언. stdlib.h 보다 먼저 와야 한다.
- * (MSVC/MinGW 의 stdlib.h 는 이 매크로가 정의되어 있을 때만 rand_s 를 선언한다.) */
-#define _CRT_RAND_S
+#include "platform.h" /* os_random, local_time */
 
 #include <stdio.h>    /* vsnprintf, fprintf */
-#include <stdlib.h>   /* malloc, realloc, free, rand_s */
+#include <stdlib.h>   /* malloc, realloc, free */
 #include <string.h>   /* memcpy, memmove, strlen */
 #include <ctype.h>    /* tolower, isspace */
-#include <time.h>     /* time, localtime_s, strftime - 로그 시각 */
+#include <time.h>     /* time, strftime - 로그 시각 */
 
 /* 버퍼를 빈 상태로 만든다. 메모리를 할당하지 않으므로 실패할 일이 없다. */
 void buf_init(Buf *b)
@@ -191,7 +188,8 @@ void str_trim(char *s)
  * rand()/srand() 는 쓰지 않는다. Windows UCRT 에서 그 상태는 스레드마다 따로라서,
  * 요청마다 스레드를 만드는 이 서버에서는 모든 스레드가 같은 난수열을 내놓는다.
  * (실제로 서로 다른 사용자가 같은 솔트를 받고 세션 토큰이 충돌했다.)
- * rand_s() 는 OS 난수원(RtlGenRandom)을 쓰고 스레드 상태에 의존하지 않는다.
+ * os_random() 은 OS 난수원(Windows: rand_s/RtlGenRandom, 리눅스·맥: /dev/urandom)을 쓰고
+ * 스레드 상태에 의존하지 않는다.
  *
  * 난수를 얻지 못하면 0 을 돌려준다. 호출자는 반드시 확인해야 하며,
  * 예측 가능한 값으로 대신 채우지 않는다. */
@@ -204,8 +202,8 @@ int random_hex(char *out, size_t n)
         unsigned int v;     /* 32비트 암호학적 난수 */
         int k;
 
-        if (rand_s(&v) != 0) {          /* 0 이 아니면 실패 (errno 값) */
-            log_err("난수 생성 실패 (rand_s)");
+        if (!os_random(&v, sizeof v)) {
+            log_err("난수 생성 실패 (os_random)");
             out[0] = '\0';              /* 반쯤 채운 값이 실수로 쓰이지 않도록 비운다 */
             return 0;
         }
@@ -222,7 +220,7 @@ int random_hex(char *out, size_t n)
 
 /* 로그 공통 구현. "[2026-10-09 14:03:12] INFO 메시지" 형식으로 stderr 에 쓴다.
  * stderr 를 쓰는 이유: 버퍼링되지 않아 서버가 비정상 종료해도 마지막 로그가 남고,
- * start-server.ps1 이 stderr 를 logs/server.err.log 로 따로 모아 준다. */
+ * start-server.sh 는 stderr 를 logs/server.err.log 로, systemd 서비스는 journalctl 로 모아 준다. */
 static void vlog(const char *level, const char *fmt, va_list ap)
 {
     char ts[32];
@@ -230,8 +228,8 @@ static void vlog(const char *level, const char *fmt, va_list ap)
     struct tm tmv;
 
     /* localtime 은 내부 정적 버퍼를 써서 스레드에 안전하지 않다.
-     * localtime_s 는 결과를 호출자가 준 tmv 에 써 주므로 여러 스레드가 동시에 써도 안전하다. */
-    localtime_s(&tmv, &now);
+     * local_time 은 결과를 호출자가 준 tmv 에 써 주므로 여러 스레드가 동시에 써도 안전하다. */
+    local_time(now, &tmv);
     strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tmv);
     fprintf(stderr, "[%s] %-4s ", ts, level);   /* %-4s: 등급을 4칸 왼쪽 정렬해 줄을 맞춘다 */
     vfprintf(stderr, fmt, ap);

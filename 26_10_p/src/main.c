@@ -5,9 +5,9 @@
  *     --port N           HTTP 포트 (기본 80)
  *     --bind-all         모든 인터페이스에 바인드 (기본은 127.0.0.1 전용)
  *     --host NAME        정규 호스트 이름 (기본 www.sku14.com)
- *     --db-host H        MySQL 호스트 (기본 127.0.0.1)
+ *     --db-host H        MySQL 호스트 (기본 127.0.0.1, 환경변수 SKU_DB_HOST)
  *     --db-port N        MySQL 포트 (기본 3306)
- *     --db-user U        MySQL 사용자 (기본 root)
+ *     --db-user U        MySQL 사용자 (기본 root, 환경변수 SKU_DB_USER)
  *     --db-pass P        MySQL 비밀번호 (환경변수 SKU_DB_PASS 가 우선 기본값)
  *     --db-name N        데이터베이스 이름 (기본 sku_contest)
  *     --webroot DIR      정적 파일 디렉터리 (기본 www)
@@ -32,8 +32,9 @@
 #include "crawler.h"
 #include "http.h"
 #include "mailer.h"
+#include "net.h"
+#include "platform.h"
 
-#include <windows.h>   /* SetConsoleOutputCP */
 #include <stdio.h>
 #include <stdlib.h>    /* getenv, atoi */
 #include <string.h>
@@ -58,7 +59,8 @@ static void usage(void)
         "www.sku14.com 으로 열려면 hosts 파일에 아래 두 줄이 있어야 합니다.\n"
         "  127.0.0.1  www.sku14.com\n"
         "  127.0.0.1  sku14.com\n"
-        "scripts\\setup-domain.ps1 을 관리자 권한으로 실행하면 자동으로 넣어줍니다.\n");
+        "리눅스·맥: scripts/setup-linux.sh --hosts 가 /etc/hosts 에 넣어 줍니다.\n"
+        "Windows: C:\\Windows\\System32\\drivers\\etc\\hosts 에 관리자 권한으로 넣습니다.\n");
 }
 
 int main(int argc, char **argv)
@@ -74,15 +76,18 @@ int main(int argc, char **argv)
     const char *admin_no = NULL, *admin_name = NULL, *admin_pw = NULL;   /* --add-admin 인자 */
     int i;
 
-    /* 콘솔과 소스 파일 모두 UTF-8 이므로 출력 코드페이지를 맞춘다.
-     * (한국어 Windows 콘솔의 기본은 CP949 라서, 이것이 없으면 한글 로그가 깨져 보인다) */
-    SetConsoleOutputCP(CP_UTF8);
+    /* 운영체제별 시작 설정 (platform.c)
+     *   Windows : 콘솔 출력 코드페이지를 UTF-8 로 (한국어 Windows 콘솔 기본은 CP949 라 한글이 깨진다)
+     *   리눅스·맥 : SIGPIPE 무시 (브라우저가 먼저 연결을 끊어도 서버가 죽지 않게) */
+    platform_init();
+    /* libcurl 전역 초기화는 스레드 안전하지 않으므로 스레드를 만들기 전에 해 둔다 */
+    net_init();
 
     /* --test-mail: DB 없이 SMTP 설정만 시험한다. */
     if (argc == 3 && !strcmp(argv[1], "--test-mail")) {
         char err[200];
         if (!mail_enabled()) {
-            log_err("SKU_SMTP_URL 이 없습니다. smtp.env 를 채우고 scripts\\send-test-mail.ps1 로 실행하세요.");
+            log_err("SKU_SMTP_URL 이 없습니다. smtp.env 를 채우고 scripts/run-server.sh --test-mail 로 실행하세요.");
             return 1;
         }
         if (!mail_send(argv[2], "[SKU14] 메일 발송 시험",
@@ -107,6 +112,12 @@ int main(int argc, char **argv)
     env_pass = getenv("SKU_DB_PASS");
     if (env_pass)
         str_copy(db.pass, sizeof db.pass, env_pass);
+    /* 접속 계정·주소도 환경변수로 줄 수 있다 (리눅스 db.env, systemd 서비스용).
+     * 호스트를 localhost 로 주면 TCP 대신 유닉스 소켓으로 접속한다. */
+    if (getenv("SKU_DB_USER") && getenv("SKU_DB_USER")[0])
+        str_copy(db.user, sizeof db.user, getenv("SKU_DB_USER"));
+    if (getenv("SKU_DB_HOST") && getenv("SKU_DB_HOST")[0])
+        str_copy(db.host, sizeof db.host, getenv("SKU_DB_HOST"));
 
     /* 2) 명령줄 인자 해석. 값을 받는 옵션은 "i + 1 < argc" 로 다음 인자가 있는지 먼저 확인하고,
      *    argv[++i] 로 값을 읽으면서 인덱스를 한 칸 더 넘긴다. */

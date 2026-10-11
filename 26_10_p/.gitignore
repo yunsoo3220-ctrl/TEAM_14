@@ -6,6 +6,7 @@ build/
 *.o
 *.dll
 server.exe
+/server
 
 # 실행 로그 (가입 이메일 주소 등이 남는다)
 logs/
@@ -14,5 +15,8 @@ logs/
 .venv/
 __pycache__/
 
-# DB 비밀번호 (서버켜기.bat 이 저장)
+# DB 접속 정보 (scripts/setup-linux.sh 가 저장)
 db.env
+
+# Claude API 키 (리눅스·맥에서 선택)
+ai.env

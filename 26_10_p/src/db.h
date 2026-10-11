@@ -7,7 +7,8 @@
  *
  * "재진입 가능(reentrant)" 하다는 것은 같은 스레드가 이미 잠근 상태에서 다시
  * 잠가도 교착(deadlock)되지 않는다는 뜻이다. Windows 의 CRITICAL_SECTION 이 이런
- * 성질을 가지므로, db_lock 으로 바깥을 잠근 뒤 안에서 db_exec 를 불러도 괜찮다.
+ * 성질을 가지므로 (리눅스·맥에서는 RECURSIVE pthread 뮤텍스, platform.c 참고),
+ * db_lock 으로 바깥을 잠근 뒤 안에서 db_exec 를 불러도 괜찮다.
  *
  * SQL 인젝션 방지: 사용자가 보낸 문자열은 반드시 db_sqlf 의 %Q 또는 db_quote 로
  * 이스케이프해서 SQL 에 넣는다. %s 는 코드에서 직접 정한 상수에만 쓴다.

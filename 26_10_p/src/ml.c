@@ -16,7 +16,7 @@
 #include "db.h"
 #include "embed.h"
 
-#include <windows.h>
+#include "platform.h"
 #include <math.h>      /* sqrt, log, exp, fabs */
 #include <stdint.h>    /* uint32_t - 해시 키 */
 #include <stdio.h>
@@ -620,20 +620,20 @@ static void fit_calibration(Model *m, const Label *lab, int nlab)
     m->pb = b;
 }
 
-static volatile LONG    g_init;    /* 0 미초기화, 1 초기화 중, 2 완료 (ai.c 와 같은 방식) */
-static CRITICAL_SECTION g_lock;    /* g_model 보호 */
+static volatile long    g_init;    /* 0 미초기화, 1 초기화 중, 2 완료 (ai.c 와 같은 방식) */
+static Mutex            g_lock;    /* g_model 보호 */
 static Model            g_model;   /* 현재 모델 */
 
 /* g_lock 을 한 번만 초기화 (스레드 안전) */
 static void ensure_init(void)
 {
-    if (InterlockedCompareExchange(&g_init, 1, 0) == 0) {
-        InitializeCriticalSection(&g_lock);
+    if (atomic_cas(&g_init, 1, 0) == 0) {
+        mutex_init(&g_lock);
         memset(&g_model, 0, sizeof g_model);
-        InterlockedExchange(&g_init, 2);
+        atomic_swap(&g_init, 2);
     }
     while (g_init != 2)
-        Sleep(0);
+        sleep_ms(0);
 }
 
 /* 모델이 가진 모든 메모리를 해제하고 0 으로 초기화 */
@@ -736,7 +736,7 @@ static int train(Model *m)
     char **ptexts = NULL, **dtexts = NULL;   /* 임베딩에 보낼 원문들 */
     Label *lab = NULL;             /* 정답 연결 목록 (확률 보정용) */
     int nlab = 0, caplab = 0;
-    double t0 = (double)GetTickCount64();   /* 학습 시간 측정용 */
+    double t0 = (double)tick_ms();   /* 학습 시간 측정용 */
 
     memset(m, 0, sizeof *m);
     current_signature(m->signature, sizeof m->signature);
@@ -974,7 +974,7 @@ static int train(Model *m)
     {
         time_t now = time(NULL);
         struct tm tmv;
-        localtime_s(&tmv, &now);
+        local_time(now, &tmv);
         strftime(m->trained_at, sizeof m->trained_at, "%Y-%m-%d %H:%M:%S", &tmv);
     }
     /* 성공: df 표는 개인 맞춤·예측에서 쓰려고 모델에 남기고, 임시 자료는 해제 */
@@ -993,10 +993,10 @@ static int train(Model *m)
     if (m->dim)
         log_info("자체 모델 학습 (임베딩 %s, %d차원 + TF-IDF): 게시물 %d, 학과 %d, 연결 %d, "
                  "mu %.3f, tau %.3f (%.0f ms)", m->emb_model, m->dim, m->nposts, m->ndepts,
-                 m->labels, m->mu, m->tau, (double)GetTickCount64() - t0);
+                 m->labels, m->mu, m->tau, (double)tick_ms() - t0);
     else
         log_info("자체 모델 학습 (TF-IDF): 게시물 %d, 학과 %d, 연결 %d, tau %.3f (%.0f ms)",
-                 m->nposts, m->ndepts, m->labels, m->tau, (double)GetTickCount64() - t0);
+                 m->nposts, m->ndepts, m->labels, m->tau, (double)tick_ms() - t0);
     return 1;
 
 fail:
@@ -1139,7 +1139,7 @@ static void explain(const Vec *post, const Vec *dept, MlHit *hit)
                 }
                 /* 이미 고른 근거와 사실상 같은 말이면 건너뛴다 */
                 for (t = 0; t < hit->nterms; t++)
-                    if (_stricmp(hit->terms[t], show) == 0 ||  /* ai 와 AI 는 같은 말 */
+                    if (str_ieq(hit->terms[t], show) ||  /* ai 와 AI 는 같은 말 */
                         josa_variant(hit->terms[t], show))
                         dup = 1;
                 if (dup)
@@ -1170,9 +1170,9 @@ int ml_rank_posts(unsigned department_id, int min_score, MlHit *out, int max, Ml
     MlHit *all;              /* 기준을 넘은 모든 후보 */
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     if (!ensure_model(0)) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     fill_info(info);
@@ -1183,7 +1183,7 @@ int ml_rank_posts(unsigned department_id, int min_score, MlHit *out, int max, Ml
     all = (MlHit *)calloc((size_t)(g_model.nposts ? g_model.nposts : 1), sizeof *all);
     if (di < 0 || !all) {
         free(all);
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return di < 0 ? 0 : -1;   /* 없는 학과면 결과 0건 (오류 아님), 메모리 부족이면 -1 */
     }
 
@@ -1208,7 +1208,7 @@ int ml_rank_posts(unsigned department_id, int min_score, MlHit *out, int max, Ml
         explain(&g_model.posts[pi].v, &g_model.depts[di].v, &out[i]);
     }
     free(all);
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return n;
 }
 
@@ -1219,9 +1219,9 @@ int ml_rank_departments(unsigned post_id, int min_score, MlHit *out, int max, Ml
     MlHit *all;
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     if (!ensure_model(0)) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     fill_info(info);
@@ -1232,7 +1232,7 @@ int ml_rank_departments(unsigned post_id, int min_score, MlHit *out, int max, Ml
     all = (MlHit *)calloc((size_t)g_model.ndepts, sizeof *all);
     if (pi < 0 || !all) {
         free(all);
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return pi < 0 ? 0 : -1;
     }
 
@@ -1255,7 +1255,7 @@ int ml_rank_departments(unsigned post_id, int min_score, MlHit *out, int max, Ml
         explain(&g_model.posts[pi].v, &g_model.depts[di].v, &out[i]);
     }
     free(all);
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return n;
 }
 
@@ -1276,9 +1276,9 @@ int ml_predict_departments(const char *title, const char *body, MlHit *out, int 
     int i, n;
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     if (!ensure_model(0)) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     fill_info(info);
@@ -1304,7 +1304,7 @@ int ml_predict_departments(const char *title, const char *body, MlHit *out, int 
     if (!all) {
         free(emb);
         vec_free(&v);
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     for (i = 0; i < g_model.ndepts; i++) {
@@ -1328,7 +1328,7 @@ int ml_predict_departments(const char *title, const char *body, MlHit *out, int 
     free(all);
     free(emb);
     vec_free(&v);
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return n;
 }
 
@@ -1338,10 +1338,10 @@ int ml_retrain(MlInfo *info)
     int ok;
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     ok = ensure_model(1);
     fill_info(info);
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return ok;
 }
 
@@ -1364,9 +1364,9 @@ int ml_rank_posts_personal(unsigned department_id, const char *profile_text, int
         return ml_rank_posts(department_id, min_score, out, max, info);
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     if (!ensure_model(0)) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     fill_info(info);
@@ -1374,7 +1374,7 @@ int ml_rank_posts_personal(unsigned department_id, const char *profile_text, int
         if (g_model.depts[i].id == department_id)
             di = i;
     if (di < 0) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return 0;
     }
 
@@ -1409,7 +1409,7 @@ int ml_rank_posts_personal(unsigned department_id, const char *profile_text, int
         free(all);
         free(qemb);
         vec_free(&q);
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     for (i = 0; i < g_model.nposts; i++) {
@@ -1435,7 +1435,7 @@ int ml_rank_posts_personal(unsigned department_id, const char *profile_text, int
     free(all);
     free(qemb);
     vec_free(&q);
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return n;
 }
 
@@ -1941,20 +1941,20 @@ int ml_match_users(unsigned user_id, int min_score, MlHit *out, int max)
     MlHit *all;
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     if (!people_ensure()) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     me = find_doc(g_people.users, g_people.nusers, user_id);
     /* 모델에 없거나(관리자) 벡터가 비었으면(키워드·자기소개가 없음) 비교할 근거가 없다 */
     if (me < 0 || g_people.users[me].v.n == 0) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return 0;
     }
     all = (MlHit *)calloc((size_t)g_people.nusers, sizeof *all);
     if (!all) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     for (i = 0; i < g_people.nusers; i++) {
@@ -1979,7 +1979,7 @@ int ml_match_users(unsigned user_id, int min_score, MlHit *out, int max)
         explain_social(&g_people, me, ui, &out[i]);                        /* ♥ 관계 (있으면 맨 앞) */
     }
     free(all);
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return n;
 }
 
@@ -1989,9 +1989,9 @@ int ml_score_recruits(unsigned user_id, const unsigned *recruit_ids, int n, MlHi
     int me, i;
 
     ensure_init();
-    EnterCriticalSection(&g_lock);
+    mutex_lock(&g_lock);
     if (!people_ensure()) {
-        LeaveCriticalSection(&g_lock);
+        mutex_unlock(&g_lock);
         return -1;
     }
     me = find_doc(g_people.users, g_people.nusers, user_id);
@@ -2005,6 +2005,6 @@ int ml_score_recruits(unsigned user_id, const unsigned *recruit_ids, int n, MlHi
         out[i].score = people_score(people_cos_ur(&g_people, me, ri));
         explain(&g_people.recs[ri].v, &g_people.users[me].v, &out[i]);
     }
-    LeaveCriticalSection(&g_lock);
+    mutex_unlock(&g_lock);
     return me < 0 ? 0 : 1;
 }

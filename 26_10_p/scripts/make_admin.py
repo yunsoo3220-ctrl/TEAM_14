@@ -26,7 +26,9 @@ import sys
 ITERATIONS = 12000          # src/sha256.c 의 PW_ITERATIONS
 SALT_HEX_LEN = 32           # PW_SALT_HEX_LEN
 # r"..." 는 raw 문자열: 역슬래시를 이스케이프로 해석하지 않는다 (Windows 경로에 편리)
-MYSQL_DEFAULT = r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe"
+# 리눅스·맥에서는 PATH 의 mysql 을 쓴다.
+MYSQL_DEFAULT = (r"C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe"
+                 if os.name == "nt" else "mysql")
 
 
 def pw_hash(salt_hex: str, password: str) -> str:

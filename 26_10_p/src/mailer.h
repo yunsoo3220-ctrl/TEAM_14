@@ -5,7 +5,7 @@
  *   SKU_SMTP_USER  로그인 계정
  *   SKU_SMTP_PASS  비밀번호 (Gmail 은 앱 비밀번호)
  *   SKU_SMTP_FROM  보내는 주소 (없으면 SKU_SMTP_USER)
- * scripts\start-server.ps1 은 프로젝트 폴더의 smtp.env 에서 이 값들을 읽어 준다.
+ * scripts/run-server.sh 는 프로젝트 폴더의 smtp.env 에서 이 값들을 읽어 준다 (scripts/env.sh).
  *
  * SKU_SMTP_URL 이 없으면 메일을 보낼 수 없다 (mail_send 실패).
  * 시험용으로 SKU_MAIL_DEV=1 을 주면 개발 모드: 보내지 않고 내용을 서버 로그에만 남긴다.
