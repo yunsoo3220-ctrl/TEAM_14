@@ -84,7 +84,7 @@ mysql -u root -p --default-character-set=utf8mb4 < sql/02_seed_departments.sql
    ```
 
 - `01_schema.sql` — `sku_contest` 데이터베이스와 표 전체를 다시 만든다 (**기존 데이터가 지워진다**).
-- `02_seed_departments.sql` — 대학 8개와 학과 27개를 넣는다.
+- `02_seed_departments.sql` — 대학 8개와 학과 29개를 넣는다.
 - `03_display_name.sql` — 이미 쓰고 있던 DB 를 새 가입 방식(전화번호 + 표시 이름)에
   맞추는 변경분. `01` 을 처음부터 다시 돌렸다면 필요 없다.
 - `04_ai.sql` — AI 분석 결과 표(`post_ai`, `post_ai_departments`)를 기존 DB 에 더하는
@@ -95,6 +95,8 @@ mysql -u root -p --default-character-set=utf8mb4 < sql/02_seed_departments.sql
 - `07_interest_tags.sql` — 가입할 때 고르는 관심 키워드 41개. `make db` 가 함께 넣는다.
 - `12_study_groups.sql` — 그룹 스터디 표(`study_groups`, `study_members`)를 기존 DB 에 더하는
   변경분 (다시 돌려도 된다). `01` 을 처음부터 돌렸다면 필요 없다.
+- `13_add_departments.sql` — 이공대학에 컴퓨터공학과·전자공학과를 기존 DB 에 더하는 변경분
+  (다시 돌려도 된다). 적용한 뒤 `05_dept_profiles.sql` 을 다시 돌린다. `02` 를 처음부터 돌렸다면 필요 없다.
 
 ### 시연용 가상 회원
 
@@ -152,6 +154,9 @@ powershell -ExecutionPolicy Bypass -File scripts\setup-domain.ps1
 > 코드는 그 구성에서도 그대로 동작한다.
 
 ## 6. 실행
+
+> 명령어 없이 더블클릭으로 켜고 끄려면 `서버켜기.bat` / `서버끄기.bat` 을 쓴다.
+> 자세한 내용은 [서버실행방법.md](서버실행방법.md).
 
 ```sh
 SKU_DB_PASS=<root 비밀번호> ./server.exe

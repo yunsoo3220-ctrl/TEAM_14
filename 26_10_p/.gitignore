@@ -13,3 +13,6 @@ logs/
 # Python 가상환경·캐시 (ml/.gitignore 와 같은 내용, 바깥에서도 막아 둔다)
 .venv/
 __pycache__/
+
+# DB 비밀번호 (서버켜기.bat 이 저장)
+db.env
