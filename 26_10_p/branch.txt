@@ -1,0 +1,20 @@
+git add .
+git commit -m "feat: implement study groups"
+
+git push -u origin feature/study-groups
+
+
+
+서버 키고 끄기
+
+# 1. 예전 서버 끄기
+powershell -ExecutionPolicy Bypass -File scripts\start-server.ps1 -Stop
+
+# 2. 새 표 추가 (비밀번호를 물어봄, 기존 데이터는 그대로)
+Get-Content sql\12_study_groups.sql -Encoding UTF8 | & "C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe" -u root -p --default-character-set=utf8mb4
+
+# 3. 새 기능을 넣어 다시 빌드
+$env:PATH = "C:\msys64\ucrt64\bin;C:\msys64\usr\bin;" + $env:PATH; make
+
+# 4. 다시 켜기
+powershell -ExecutionPolicy Bypass -File scripts\start-server.ps1 -Port 8080 -NoAdmin -DbPass "DB비밀번호"
