@@ -282,6 +282,8 @@ CREATE TABLE recruit_likes (
   CONSTRAINT fk_rl_user    FOREIGN KEY (user_id)    REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+
+----------------------------------------------------------------------------------------------------------
 -- 그룹 스터디. 만든 사람(owner)이 방장으로 멤버 추가·역할 지정·삭제를 한다.
 CREATE TABLE study_groups (
   id          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
@@ -306,6 +308,8 @@ CREATE TABLE study_members (
   CONSTRAINT fk_sm_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,
   CONSTRAINT fk_sm_user  FOREIGN KEY (user_id)  REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+--------------------------------------------------------------------------------------------------------------
+
 
 -- 마지막 수집 시각 등 서버 설정값
 -- 키-값(k-v) 형태라 설정이 늘어도 표 구조를 바꿀 필요가 없다.
