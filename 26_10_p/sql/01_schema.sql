@@ -283,8 +283,8 @@ CREATE TABLE recruit_likes (
 ) ENGINE=InnoDB;
 
 
-----------------------------------------------------------------------------------------------------------
--- 그룹 스터디. 만든 사람(owner)이 방장으로 멤버 추가·역할 지정·삭제를 한다.
+-- --------------------------------------------------------------------------------------------------------
+-- 그룹 스터디·멘토링 (kind 로 구분). 만든 사람(owner)이 방장으로 멤버 추가·역할 지정·삭제를 한다.
 CREATE TABLE study_groups (
   id          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
   owner_id    INT UNSIGNED  NOT NULL,                 -- 방장
@@ -292,6 +292,7 @@ CREATE TABLE study_groups (
   description VARCHAR(1000) NOT NULL DEFAULT '',
   max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
   end_date    DATE          NULL,                    -- 종료일 (지나면 자동 삭제, NULL = 없음)
+  kind        ENUM('study','mentoring') NOT NULL DEFAULT 'study',  -- 그룹 스터디 / 멘토링
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_study_groups_owner (owner_id),
@@ -309,7 +310,7 @@ CREATE TABLE study_members (
   CONSTRAINT fk_sm_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,
   CONSTRAINT fk_sm_user  FOREIGN KEY (user_id)  REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
---------------------------------------------------------------------------------------------------------------
+-- ------------------------------------------------------------------------------------------------------------
 
 
 -- 마지막 수집 시각 등 서버 설정값

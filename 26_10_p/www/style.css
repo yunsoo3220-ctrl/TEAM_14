@@ -503,6 +503,7 @@ input, select, textarea {
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: .8; }
 input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--brand); }
 textarea { resize: vertical; }
+input[name="end_date"], select { cursor: pointer; }
 
 input:hover, select:hover, textarea:hover { border-color: color-mix(in srgb, var(--brand) 35%, var(--border-strong)); }
 input:focus, select:focus, textarea:focus {
@@ -1259,6 +1260,26 @@ button.danger { color: var(--danger); }
 .tag.mentor { background: var(--ok-soft);      color: var(--ok); }
 .tag.mentee { background: var(--k-hack-soft);  color: var(--k-hack); }
 .tag.owner  { background: var(--brand-soft);   color: var(--brand-dark); }
+
+/* 멘토링 만들기: 내 역할 고르기 (멘토 / 멘티 두 칸 버튼) */
+.role-pick {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.role-pick label { position: relative; flex-direction: row; cursor: pointer; }
+.role-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.role-pick span {
+  padding: 7px 16px;
+  border-radius: 7px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.role-pick input:checked + span { background: var(--brand); color: #fff; }
+.role-pick input:focus-visible + span { outline: 2px solid var(--brand-ring); outline-offset: 1px; }
 
 .study-members { display: flex; flex-direction: column; gap: 18px; }
 .study-group-title { margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--text-2); }

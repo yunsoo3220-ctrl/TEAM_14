@@ -80,6 +80,12 @@
       </span>
       <span class="label">그룹 스터디<small>Study Groups</small></span>
     </a>
+    <a href="#/mentoring" data-nav="mentoring">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M8 10a3 3 0 100-6 3 3 0 000 6z"/><path d="M2 20a6 6 0 0112 0"/><path d="M16 13a2.5 2.5 0 100-5 2.5 2.5 0 000 5z"/><path d="M14.5 20a4.5 4.5 0 017.5-3.4"/></svg>
+      </span>
+      <span class="label">멘토링<small>Mentoring</small></span>
+    </a>
     <a href="#/ai" data-nav="ai">
       <span class="ico" aria-hidden="true">
         <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 9.5h5v5h-5zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
@@ -422,6 +428,95 @@
 <template id="tpl-study">
   <div class="stack">
     <a class="back" href="#/studies">← 그룹 스터디</a>
+    <article class="card post">
+      <div class="post-head">
+        <div class="item-top" data-tags-top></div>
+        <h2 data-name></h2>
+      </div>
+      <dl class="meta">
+        <div><dt>방장</dt><dd data-owner></dd></div>
+        <div><dt>인원</dt><dd data-count></dd></div>
+        <div><dt>멘토 · 멘티</dt><dd data-mm></dd></div>
+        <div><dt>만든 날</dt><dd data-created></dd></div>
+        <div><dt>종료일</dt><dd data-end></dd></div>
+      </dl>
+      <p class="body" data-description></p>
+      <div class="row owner-actions" data-actions hidden></div>
+    </article>
+    <section class="card">
+      <div class="card-head"><h2>멤버</h2></div>
+      <div data-members class="study-members"></div>
+    </section>
+    <section class="card" data-add hidden>
+      <div class="card-head"><h2>멤버 추가 <small class="muted">방장</small></h2></div>
+      <form data-search class="study-search">
+        <input name="q" placeholder="표시 이름 또는 학과로 찾기 (예: 김*수, 컴퓨터)" autocomplete="off">
+        <select name="role">
+          <option value="member">일반 멤버로</option>
+          <option value="mentor">멘토로</option>
+          <option value="mentee">멘티로</option>
+        </select>
+        <button type="submit">찾기</button>
+      </form>
+      <div data-results class="mini-list"></div>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 멘토링
+     tpl-mentorings: 목록 (#/mentoring), tpl-mentoring-new: 만들기 (#/mentoring/new), tpl-mentoring: 상세·멤버 (#/mentoring/{id})
+     그룹 스터디와 같은 화면이고 글자만 다르다 -->
+<template id="tpl-mentorings">
+  <div class="stack">
+    <section class="card">
+      <div class="card-head">
+        <h2>멘토링 <span data-count class="muted"></span></h2>
+        <a class="btn" href="#/mentoring/new" data-new>멘토링 만들기</a>
+      </div>
+      <div class="filters one">
+        <label><span>보기</span>
+          <select data-f="mine">
+            <option value="">전체 멘토링</option>
+            <option value="1">내가 속한 멘토링</option>
+          </select>
+        </label>
+      </div>
+    </section>
+    <div data-list class="recruit-grid"></div>
+  </div>
+</template>
+
+<template id="tpl-mentoring-new">
+  <div class="stack">
+    <a class="back" href="#/mentoring">← 멘토링</a>
+    <section class="card">
+      <div class="card-head"><h2>멘토링 만들기</h2></div>
+      <form data-form class="stack-sm">
+        <label><span>멘토링 이름</span><input name="name" maxlength="100" required placeholder="예) 정보처리기사 실기 멘토링"></label>
+        <label><span>정원 <small>최대 4명</small></span><select name="max_members" required>
+          <option value="2">2명</option>
+          <option value="3">3명</option>
+          <option value="4" selected>4명</option>
+        </select></label>
+        <label><span>종료일 <small>선택 · 이날이 지나면 멘토링이 자동으로 삭제됩니다</small></span><input name="end_date" type="date"></label>
+        <label><span>소개 <small>선택</small></span><textarea name="description" rows="5" maxlength="1000"
+          placeholder="무엇을 공부하는지, 모이는 요일·방식(온라인/대면), 멘토·멘티를 둘 계획인지 적어 주세요."></textarea></label>
+        <p class="muted small">만든 사람이 방장이 됩니다. 내가 멘토인지 멘티인지 고르고 만드세요. 다른 멤버의 역할은 나중에 정할 수 있습니다.</p>
+        <div class="row">
+          <div class="role-pick" role="radiogroup" aria-label="내 역할">
+            <label><input type="radio" name="role" value="mentor" checked><span>멘토</span></label>
+            <label><input type="radio" name="role" value="mentee"><span>멘티</span></label>
+          </div>
+          <button type="submit">만들기</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</template>
+
+<template id="tpl-mentoring">
+  <div class="stack">
+    <a class="back" href="#/mentoring">← 멘토링</a>
     <article class="card post">
       <div class="post-head">
         <div class="item-top" data-tags-top></div>

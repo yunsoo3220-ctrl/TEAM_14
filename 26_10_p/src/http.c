@@ -377,7 +377,7 @@ static void header_value(const char *line, char *out, size_t outsz)
  *   head/head_len : 요청 라인부터 빈 줄(\r\n\r\n)까지의 헤더 영역 */
 static int parse_request(const char *head, size_t head_len, Request *req)
 {
-    char line[2048];                  /* 한 줄을 복사해 다룰 작업 버퍼 */
+    char line[8200];                  /* 한 줄을 복사해 다룰 작업 버퍼 (긴 Cookie 줄도 담을 수 있게) */
     const char *p = head;
     const char *end = head + head_len;
     const char *sp1, *sp2, *q;        /* 첫 번째/두 번째 공백 위치, '?' 위치 */

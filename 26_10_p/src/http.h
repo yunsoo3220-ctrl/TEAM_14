@@ -23,7 +23,7 @@ typedef struct {
     char   path[HTTP_PATH_MAX];      /* URL 디코딩된 경로 (쿼리 제외) */
     char   query[512];               /* 원본 쿼리 문자열 */
     char   host[128];                /* Host 헤더 (포트 포함 가능) */
-    char   cookie[1024];             /* Cookie 헤더 원문 ("a=1; b=2" 형태) */
+    char   cookie[8192];             /* Cookie 헤더 원문 ("a=1; b=2" 형태). localhost 는 다른 개발 서버의 쿠키까지 섞여 길어질 수 있다 */
     char   content_type[128];        /* Content-Type 헤더 (예: application/json) */
     char   client_ip[48];            /* 접속한 클라이언트의 IP 주소 문자열 */
     char  *body;                     /* 본문 (NUL 종료, 없으면 NULL) */

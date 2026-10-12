@@ -1767,11 +1767,19 @@ async function viewRecruit(id) {
 
 const ROLE_LABEL = { mentor: '멘토', mentee: '멘티', member: '멤버' };
 
+/* 그룹 스터디와 멘토링은 같은 화면·같은 API 를 쓰고 글자·주소만 다르다 (서버에서는 kind 로 구분).
+ *   path: 주소(#/{path}), tpl/list: 상세·목록 템플릿 이름, title: 메뉴 이름, n: 이름, eul/ga: 조사 붙은 이름 */
+const STUDY_KIND = {
+  study:     { path: 'studies',   tpl: 'study',     list: 'studies',    title: '그룹 스터디', n: '스터디', eul: '스터디를', ga: '스터디가' },
+  mentoring: { path: 'mentoring', tpl: 'mentoring', list: 'mentorings', title: '멘토링',     n: '멘토링', eul: '멘토링을', ga: '멘토링이' },
+};
+const kindOf = s => STUDY_KIND[s.kind] || STUDY_KIND.study;
+
 /* 스터디 목록 카드 */
 function studyCard(s) {
   const full = s.member_count >= s.max_members;
   const a = el('a', 'recruit-card' + (full && !s.my_role ? ' closed' : ''));
-  a.href = `#/studies/${s.id}`;
+  a.href = `#/${kindOf(s).path}/${s.id}`;
 
   const tags = el('div', 'item-top');
   tags.append(el('span', full ? 'tag plain' : 'tag ok', `${s.member_count} / ${s.max_members}명`));
@@ -1791,12 +1799,13 @@ function studyCard(s) {
   return a;
 }
 
-/* #/studies - 스터디 목록 (전체 / 내가 속한 것) */
-async function viewStudies() {
-  markNav('studies');
-  setPageTitle('그룹 스터디');
+/* #/studies, #/mentoring - 스터디·멘토링 목록 (전체 / 내가 속한 것) */
+async function viewStudies(kind = 'study') {
+  const K = STUDY_KIND[kind];
+  markNav(K.path);
+  setPageTitle(K.title);
 
-  const node = tpl('tpl-studies');
+  const node = tpl(`tpl-${K.list}`);
   const root = node.firstElementChild;
   const listEl = root.querySelector('[data-list]');
   const countEl = root.querySelector('[data-count]');
@@ -1809,11 +1818,12 @@ async function viewStudies() {
   async function reload() {
     listEl.replaceChildren(...skeleton(4, 'sk-reco'));
     try {
-      const r = await api(`/api/studies${mineSel.value ? '?mine=1' : ''}`);
+      const r = await api(`/api/studies?kind=${kind}${mineSel.value ? '&mine=1' : ''}`);
       countEl.textContent = `(${r.studies.length})`;
       listEl.replaceChildren(...(r.studies.length
         ? r.studies.map(studyCard)
-        : [el('p', 'empty', mineSel.value ? '아직 참여한 스터디가 없습니다.' : '아직 스터디가 없습니다. 첫 스터디를 만들어 보세요.')]));
+        : [el('p', 'empty', mineSel.value ? `아직 참여한 ${K.ga} 없습니다.`
+                                          : `아직 ${K.ga} 없습니다. 첫 ${K.eul} 만들어 보세요.`)]));
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
@@ -1823,16 +1833,19 @@ async function viewStudies() {
   reload();
 }
 
-/* #/studies/new - 스터디 만들기 */
-function viewStudyNew() {
-  markNav('studies');
-  setPageTitle('스터디 만들기');
-  if (!state.me) return requireLogin('스터디를 만들려면 로그인하세요.');
+/* #/studies/new, #/mentoring/new - 스터디·멘토링 만들기 */
+function viewStudyNew(kind = 'study') {
+  const K = STUDY_KIND[kind];
+  markNav(K.path);
+  setPageTitle(`${K.n} 만들기`);
+  if (!state.me) return requireLogin(`${K.eul} 만들려면 로그인하세요.`);
 
-  const node = tpl('tpl-study-new');
+  const node = tpl(`tpl-${K.tpl}-new`);
   const form = node.querySelector('[data-form]');
   const now = new Date();   /* 종료일은 오늘부터 고를 수 있다 (지난 날짜면 바로 지워지므로) */
   form.elements.end_date.min = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  /* 아이콘뿐 아니라 칸 어디를 눌러도 달력이 펼쳐지게 */
+  form.elements.end_date.addEventListener('click', ev => { try { ev.currentTarget.showPicker(); } catch (e) {} });
   form.onsubmit = async ev => {
     ev.preventDefault();
     const v = formValues(form);
@@ -1842,10 +1855,10 @@ function viewStudyNew() {
       const out = await api('/api/studies', {
         method: 'POST',
         body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6),
-                               end_date: v.end_date || null }),
+                               end_date: v.end_date || null, kind, role: v.role }),
       });
-      toast('스터디를 만들었습니다. 멤버를 추가해 보세요.');
-      location.hash = `#/studies/${out.id}`;
+      toast(`${K.eul} 만들었습니다. 멤버를 추가해 보세요.`);
+      location.hash = `#/${K.path}/${out.id}`;
     } catch (e) {
       toast(e.message);
       btn.disabled = false;
@@ -1883,7 +1896,7 @@ function studyMemberRow(m, study, canManage, reload) {
     if (!m.is_owner) {
       const out = el('button', 'ghost small danger', '내보내기');
       out.onclick = async () => {
-        if (!confirm(`${m.nickname} 님을 스터디에서 내보낼까요?`)) return;
+        if (!confirm(`${m.nickname} 님을 ${kindOf(study).n}에서 내보낼까요?`)) return;
         try {
           await api(`/api/studies/${study.id}/members/${m.user_id}`, { method: 'DELETE' });
           reload();
@@ -1898,18 +1911,21 @@ function studyMemberRow(m, study, canManage, reload) {
   return row;
 }
 
-/* #/studies/{id} - 스터디 상세: 멤버(멘토·멘티·멤버 묶음), 참여/나가기, 방장의 멤버 추가 */
-async function viewStudy(id) {
-  markNav('studies');
-  setPageTitle('그룹 스터디');
+/* #/studies/{id}, #/mentoring/{id} - 상세: 멤버(멘토·멘티·멤버 묶음), 참여/나가기, 방장의 멤버 추가 */
+async function viewStudy(id, kind = 'study') {
+  markNav(STUDY_KIND[kind].path);
+  setPageTitle(STUDY_KIND[kind].title);
 
   let data;
   try { data = await api(`/api/studies/${id}`); }
   catch (e) { return renderMessage(e.message); }
 
   const { study: s, description, members, can_manage } = data;
-  const reload = () => viewStudy(id);
-  const node = tpl('tpl-study');
+  const K = kindOf(s);   /* 주소가 아니라 서버가 알려 준 구분을 따른다 */
+  markNav(K.path);
+  setPageTitle(K.title);
+  const reload = () => viewStudy(id, s.kind);
+  const node = tpl(`tpl-${K.tpl}`);
   const root = node.firstElementChild;
   const full = s.member_count >= s.max_members;
 
@@ -1937,31 +1953,31 @@ async function viewStudy(id) {
     join.onclick = async () => {
       try {
         await api(`/api/studies/${id}/join`, { method: 'POST' });
-        toast('스터디에 참여했습니다.');
+        toast(`${K.n}에 참여했습니다.`);
         reload();
       } catch (e) { toast(e.message); }
     };
     actions.append(join);
   } else if (s.my_role && !isOwner) {
-    const leave = el('button', 'ghost small', '스터디 나가기');
+    const leave = el('button', 'ghost small', `${K.n} 나가기`);
     leave.onclick = async () => {
-      if (!confirm('이 스터디에서 나갈까요?')) return;
+      if (!confirm(`이 ${K.n}에서 나갈까요?`)) return;
       try {
         await api(`/api/studies/${id}/members/${state.me.id}`, { method: 'DELETE' });
-        toast('스터디에서 나왔습니다.');
+        toast(`${K.n}에서 나왔습니다.`);
         reload();
       } catch (e) { toast(e.message); }
     };
     actions.append(leave);
   }
   if (can_manage) {
-    const del = el('button', 'ghost small danger', '스터디 삭제');
+    const del = el('button', 'ghost small danger', `${K.n} 삭제`);
     del.onclick = async () => {
-      if (!confirm('이 스터디를 지울까요? 멤버 목록도 함께 지워집니다.')) return;
+      if (!confirm(`이 ${K.eul} 지울까요? 멤버 목록도 함께 지워집니다.`)) return;
       try {
         await api(`/api/studies/${id}`, { method: 'DELETE' });
         toast('지웠습니다.');
-        location.hash = '#/studies';
+        location.hash = `#/${K.path}`;
       } catch (e) { toast(e.message); }
     };
     actions.append(del);
@@ -2168,6 +2184,9 @@ function route() {
   if (parts[0] === 'studies' && parts[1] === 'new') return viewStudyNew();
   if (parts[0] === 'studies' && parts[1]) return viewStudy(Number(parts[1]));
   if (parts[0] === 'studies') return viewStudies();
+  if (parts[0] === 'mentoring' && parts[1] === 'new') return viewStudyNew('mentoring');
+  if (parts[0] === 'mentoring' && parts[1]) return viewStudy(Number(parts[1]), 'mentoring');
+  if (parts[0] === 'mentoring') return viewStudies('mentoring');
   if (parts[0] === 'people') return viewPeople();
   if (parts[0] === 'ai') return viewAi();
   if (parts[0] === 'me') return viewMe();

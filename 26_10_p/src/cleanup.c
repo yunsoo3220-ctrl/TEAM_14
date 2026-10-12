@@ -40,6 +40,17 @@ void cleanup_ensure_schema(void)
         else
             log_warn("study_groups 에 end_date 열을 추가하지 못했습니다. sql/14_auto_cleanup.sql 을 적용하세요.");
     }
+
+    /* study_groups.kind: 그룹 스터디 / 멘토링 구분 (sql/15_mentoring.sql 과 같은 내용) */
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "
+                  "WHERE table_schema = DATABASE() AND table_name = 'study_groups' "
+                  "AND column_name = 'kind'", 1) == 0) {
+        if (db_exec("ALTER TABLE study_groups ADD COLUMN kind ENUM('study','mentoring') "
+                    "NOT NULL DEFAULT 'study' AFTER end_date"))
+            log_info("study_groups 에 구분(kind) 열을 추가했습니다.");
+        else
+            log_warn("study_groups 에 kind 열을 추가하지 못했습니다. sql/15_mentoring.sql 을 적용하세요.");
+    }
 }
 
 int cleanup_backfill_deadlines(void)
