@@ -8,6 +8,7 @@
  *   POST /api/logout                 로그아웃 (세션 삭제)
  *   GET  /api/me                     현재 로그인한 사용자 정보
  *   GET  /api/departments            단과대학별 학과 목록 (가입 화면의 선택 상자용)
+ *   POST /api/admin/users            관리자가 회원을 직접 추가 (이메일 인증 없이, 관리자 전용)
  * 그리고 /api/ 가 아닌 모든 GET 요청은 www 폴더의 정적 파일로 응답한다.
  *
  * 세션 방식 인증 흐름:
@@ -40,6 +41,50 @@ void api_set_canonical_host(const char *host, unsigned short port)
 {
     str_copy(g_canonical_host, sizeof g_canonical_host, host ? host : "");
     g_canonical_port = port;
+}
+
+/* Host 헤더 값이 주소에 넣어도 되는 글자(영문·숫자·.-:)로만 되어 있고, 이 컴퓨터 자신(localhost)이 아니면 1.
+ * 받는 사람에게 localhost 링크를 보내면 열리지 않으므로 뺀다. */
+static int host_usable(const char *h)
+{
+    const char *p;
+
+    if (!h[0] || !strncmp(h, "localhost", 9) || !strncmp(h, "127.", 4) || !strncmp(h, "[::1]", 5))
+        return 0;
+    for (p = h; *p; p++)
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '-' && *p != ':')
+            return 0;
+    return 1;
+}
+
+void api_site_url(const Request *req, char *out, size_t outsz)
+{
+    const char *env = getenv("SKU_SITE_URL");
+    char name[128];
+    size_t n;
+
+    if (env && (!strncmp(env, "http://", 7) || !strncmp(env, "https://", 8))) {
+        str_copy(out, outsz, env);
+        n = strlen(out);
+        while (n > 0 && out[n - 1] == '/')       /* 끝의 / 는 뗀다 (뒤에 "/#/..." 를 붙이므로) */
+            out[--n] = '\0';
+        return;
+    }
+    if (req && host_usable(req->host)) {
+        size_t len;
+        int https;
+        host_name_only(req->host, name, sizeof name);
+        len = strlen(name);
+        /* Tailscale Funnel 은 https 로 받아 이 서버에는 http 로 넘겨 주므로 이름으로도 알아본다 */
+        https = str_ieq(req->fwd_proto, "https") ||
+                (len > 7 && str_ieq(name + len - 7, ".ts.net"));
+        snprintf(out, outsz, "%s://%s", https ? "https" : "http", https ? name : req->host);
+        return;
+    }
+    if (g_canonical_port == 80)
+        snprintf(out, outsz, "http://%s", g_canonical_host);
+    else
+        snprintf(out, outsz, "http://%s:%u", g_canonical_host, g_canonical_port);
 }
 
 /* 요청이 "www." 를 뗀 정규 호스트로 들어왔으면 www 쪽으로 보낼 주소를 만든다.
@@ -94,7 +139,9 @@ int auth_current(const Request *req, CurrentUser *u)
     db_sqlf(&sql,
             "SELECT u.id, u.student_no, u.name, u.nickname, "
             "       IFNULL(u.department_id, 0), IFNULL(d.name, ''), IFNULL(c.name, ''), "
-            "       u.role = 'admin' "
+            "       u.role = 'admin', "
+            "       IF(u.suspended_until > NOW(), DATE_FORMAT(u.suspended_until, '%%Y-%%m-%%d %%H:%%i'), ''), "
+            "       IF(u.suspended_until > NOW(), u.suspend_reason, '') "
             "FROM sessions s "
             "JOIN users u ON u.id = s.user_id "
             "LEFT JOIN departments d ON d.id = u.department_id "
@@ -116,6 +163,8 @@ int auth_current(const Request *req, CurrentUser *u)
         str_copy(u->department_name, sizeof u->department_name, row[5]);
         str_copy(u->college_name, sizeof u->college_name, row[6]);
         u->is_admin = (row[7][0] == '1');
+        str_copy(u->suspended_until, sizeof u->suspended_until, row[8] ? row[8] : "");
+        str_copy(u->suspend_reason, sizeof u->suspend_reason, row[9] ? row[9] : "");
     }
     mysql_free_result(res);
     return u->id != 0;
@@ -203,6 +252,11 @@ static void write_user(Buf *b, const CurrentUser *u)
     json_kv_str(b, "college_name", u->college_name[0] ? u->college_name : NULL);
     buf_putc(b, ',');
     json_kv_bool(b, "is_admin", u->is_admin);
+    buf_putc(b, ',');
+    /* 정지 중이면 끝나는 시각과 사유 (화면 위 안내 띠에 쓴다), 아니면 null */
+    json_kv_str(b, "suspended_until", u->suspended_until[0] ? u->suspended_until : NULL);
+    buf_putc(b, ',');
+    json_kv_str(b, "suspend_reason", u->suspended_until[0] ? u->suspend_reason : NULL);
     buf_putc(b, '}');
 }
 
@@ -717,6 +771,105 @@ out:
     json_free(in);
 }
 
+/* POST /api/admin/users {student_no, name, phone, department_id, password, email?} (관리자 전용)
+ * 관리자가 학생 계정을 직접 만든다. 가입(handle_register)과 같은 규칙으로 검사하되
+ * 이메일 인증은 하지 않는다 (관리자가 확인한 사람). 이메일은 선택이고, 적으면 학교 메일이어야 한다. */
+static void handle_admin_user_create(Request *req, Response *res)
+{
+    CurrentUser admin;
+    Json *in;
+    const char *student_no, *name, *phone, *password, *email_in;
+    char email[128] = "";
+    unsigned dept_id;
+    char salt[PW_SALT_HEX_LEN + 1];
+    char hash[PW_HASH_HEX_LEN + 1];
+    Buf sql, display;
+    unsigned long long new_id;
+
+    if (!auth_require_admin(req, res, &admin))
+        return;
+    in = body_object(req, res);
+    if (!in)
+        return;
+    buf_init(&display);
+
+    student_no = json_str(in, "student_no", "");
+    name       = json_str(in, "name", "");
+    phone      = json_str(in, "phone", "");
+    password   = json_str(in, "password", "");
+    email_in   = json_str(in, "email", "");
+    dept_id    = (unsigned)json_int(in, "department_id", 0);
+
+    if (!valid_student_no(student_no)) {
+        res_error(res, 400, "bad_student_no", "학번은 숫자 4~20자로 입력하세요.");
+        goto out;
+    }
+    if (strlen(name) < 2 || strlen(name) > 40) {
+        res_error(res, 400, "bad_name", "이름을 입력하세요.");
+        goto out;
+    }
+    if (!make_display_name(name, phone, &display)) {
+        res_error(res, 400, "bad_phone", "전화번호를 010-0000-0000 형식으로 입력하세요.");
+        goto out;
+    }
+    if (strlen(password) < 8) {
+        res_error(res, 400, "weak_password", "비밀번호는 8자 이상이어야 합니다.");
+        goto out;
+    }
+    if (email_in[0] && !school_email(email_in, email, sizeof email)) {
+        res_error(res, 400, "bad_email", "이메일은 비우거나 학교 이메일(@skuniv.ac.kr)로 입력하세요.");
+        goto out;
+    }
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM departments WHERE id = %u", dept_id);
+    if (!db_scalar(sql.data, 0)) {
+        buf_free(&sql);
+        res_error(res, 400, "bad_department", "소속 학과를 선택하세요.");
+        goto out;
+    }
+    buf_free(&sql);
+
+    if (!random_hex(salt, PW_SALT_HEX_LEN)) {
+        res_error(res, 500, "no_entropy", "보안 처리에 실패했습니다. 잠시 후 다시 시도하세요.");
+        goto out;
+    }
+    pw_hash(salt, password, hash);
+
+    buf_init(&sql);
+    db_sqlf(&sql,
+            "INSERT INTO users (student_no, name, phone, email, nickname, department_id, role, pw_salt, pw_hash) "
+            "VALUES (%Q, %Q, %Q, %Q, %Q, %u, 'student', %Q, %Q)",
+            student_no, name, phone, email[0] ? email : NULL, display.data, dept_id, salt, hash);
+    if (!db_exec_buf(&sql)) {
+        buf_free(&sql);
+        if (db_errno() == DB_ERR_DUP_ENTRY)
+            res_error(res, 409, "duplicate",
+                      strstr(db_error(), "email") ? "이미 가입한 이메일입니다." : "이미 등록된 학번입니다.");
+        else
+            res_error(res, 500, "db_error", "회원을 추가할 수 없습니다.");
+        goto out;
+    }
+    new_id = db_last_id();   /* 다른 질의가 끼기 전에 바로 읽는다 */
+    buf_free(&sql);
+    log_info("관리자 %s 가 회원 %s (%s) 를 추가했습니다.", admin.student_no, student_no, display.data);
+
+    {
+        Buf b;
+        buf_init(&b);
+        buf_puts(&b, "{\"ok\":true,");
+        json_kv_int(&b, "id", (long long)new_id);
+        buf_putc(&b, ',');
+        json_kv_str(&b, "nickname", display.data);
+        buf_putc(&b, '}');
+        res_json_buf(res, 201, &b);
+        buf_free(&b);
+    }
+
+out:
+    buf_free(&display);
+    json_free(in);
+}
+
 /* ---------------------------------------------------------------- 로그인 */
 
 /* POST /api/login {"student_no":"...","password":"..."} */
@@ -835,10 +988,18 @@ static void handle_me(Request *req, Response *res)
     buf_putc(&b, '{');
     json_kv_bool(&b, "ai_enabled", ai_enabled());
     buf_puts(&b, ",\"user\":");
-    if (!auth_current(req, &u))
+    if (!auth_current(req, &u)) {
         buf_puts(&b, "null");
-    else
+    } else {
+        Buf sql;
         write_user(&b, &u);
+        /* 사이드바 알림함 배지 (api_notify.c) */
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT COUNT(*) FROM notifications WHERE user_id = %u AND read_at IS NULL", u.id);
+        buf_putc(&b, ',');
+        json_kv_int(&b, "unread_notifications", db_scalar(sql.data, 0));
+        buf_free(&sql);
+    }
     buf_putc(&b, '}');
     res_json_buf(res, 200, &b);
     buf_free(&b);
@@ -906,6 +1067,7 @@ static void handle_departments(Response *res)
 int route_auth(Request *req, Response *res)
 {
     if (req_is(req, "POST", "/api/register")) { handle_register(req, res); return 1; }
+    if (req_is(req, "POST", "/api/admin/users")) { handle_admin_user_create(req, res); return 1; }
     if (req_is(req, "POST", "/api/register/send-code")) { handle_send_code(req, res); return 1; }
     if (req_is(req, "POST", "/api/register/verify-code")) { handle_verify_code(req, res); return 1; }
     if (req_is(req, "POST", "/api/login"))    { handle_login(req, res);    return 1; }
@@ -998,6 +1160,33 @@ static void serve_static(Request *req, Response *res)
     res_header(res, "Cache-Control", "no-cache");
 }
 
+/* ------------------------------------------------------------ 정지 회원 */
+
+/* 정지 중인 회원은 보기(GET)만 할 수 있다. 글·댓글·참여·권유·좋아요 같은 쓰기 요청은
+ * 라우터마다 막지 않고 여기 입구에서 한 번에 막는다 (새 기능이 생겨도 따로 챙길 필요가 없게).
+ * 그래도 되는 것: 로그인·로그아웃, 알림함 읽음 표시·지우기 (정지 알림을 확인해야 하므로).
+ * 막았으면 403 을 채우고 1. */
+static int suspended_blocked(const Request *req, Response *res)
+{
+    CurrentUser u;
+    unsigned nid;
+    char msg[512];
+
+    if (!strcmp(req->method, "GET"))
+        return 0;
+    if (req_is(req, "POST", "/api/login") || req_is(req, "POST", "/api/logout") ||
+        req_is(req, "POST", "/api/notifications/read-all") ||
+        (!strcmp(req->method, "POST") && path_id(req->path, "/api/notifications/", "/read", &nid)) ||
+        (!strcmp(req->method, "DELETE") && path_id(req->path, "/api/notifications/", NULL, &nid)))
+        return 0;
+    if (!auth_current(req, &u) || !u.suspended_until[0] || u.is_admin)
+        return 0;
+    snprintf(msg, sizeof msg, "계정이 %s 까지 정지되어 글쓰기·댓글·참여를 할 수 없습니다.%s%s",
+             u.suspended_until, u.suspend_reason[0] ? " 사유: " : "", u.suspend_reason);
+    res_error(res, 403, "suspended", msg);
+    return 1;
+}
+
 /* ------------------------------------------------------------ 디스패처 */
 
 /* 모든 요청의 입구. 설명은 api.h 참고. */
@@ -1018,6 +1207,8 @@ void api_dispatch(Request *req, Response *res)
 
     /* API 요청: 각 모듈 라우터에 차례로 물어본다 (먼저 처리한 곳에서 멈춤) */
     if (strncmp(req->path, "/api/", 5) == 0) {
+        if (suspended_blocked(req, res))
+            return;
         if (route_auth(req, res))  return;
         if (route_posts(req, res)) return;
         if (route_admin(req, res)) return;
@@ -1025,6 +1216,10 @@ void api_dispatch(Request *req, Response *res)
         if (route_ml(req, res))    return;
         if (route_community(req, res)) return;
         if (route_study(req, res))     return;
+        if (route_books(req, res))     return;
+        if (route_invite(req, res))    return;
+        if (route_notify(req, res))    return;
+        if (route_manage(req, res))    return;
         res_error(res, 404, "no_route", "그런 API 가 없습니다.");
         return;
     }
@@ -1069,7 +1264,7 @@ int api_create_admin(const char *student_no, const char *name, const char *passw
     db_sqlf(&sql,
             "INSERT INTO users (student_no, name, nickname, department_id, role, pw_salt, pw_hash) "
             "VALUES (%Q, %Q, %Q, NULL, 'admin', %Q, %Q) "
-            "ON DUPLICATE KEY UPDATE name = VALUES(name), role = 'admin', "
+            "ON DUPLICATE KEY UPDATE name = VALUES(name), nickname = VALUES(nickname), role = 'admin', "
             "pw_salt = VALUES(pw_salt), pw_hash = VALUES(pw_hash)",
             student_no, name, name, salt, hash);
     ok = db_exec_buf(&sql);

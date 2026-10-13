@@ -4,6 +4,7 @@
  *   GET    /api/profile                    내 키워드와 자기소개 (로그인)
  *   PUT    /api/profile                    {interest_ids:[...], bio}
  *   GET    /api/members/matches            나와 성향이 비슷한 회원 (로그인)
+ *                                           ?kind=recruit|study&id= 이면 그 모집글·스터디의 팀원 찾기 (작성자·방장)
  *   GET    /api/recruits                   모집글 목록 ?status=open|all&tag=&post_id=&sort=new|match
  *   POST   /api/recruits                   모집글 쓰기 (로그인)
  *   GET    /api/recruits/{id}              모집글 + 댓글
@@ -348,17 +349,22 @@ static void handle_profile_put(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 잘 맞는 회원 */
 
-/* GET /api/members/matches?limit=12
+/* GET /api/members/matches?limit=12[&kind=recruit|study&id=N]
  * 응답: {"my_tags":[..],"members":[{id,nickname,department_name,college_name,bio,tags,
- *                                    shared_tags,open_recruits,score,terms}, ...]} */
+ *                                    shared_tags,open_recruits,score,terms[,invited]}, ...]
+ *        [,"target":{kind,subkind,id,title,open}]}
+ * kind·id 를 주면 그 모집글·스터디의 "팀원 찾기": 작성자·방장만 볼 수 있고, 이미 함께하는 사람은 빼며,
+ * 회원마다 이미 참여를 권유했는지(invited)를 알려 준다 (api_invite.c). */
 static void handle_matches(Request *req, Response *res)
 {
     CurrentUser u;
-    char limit_s[8];
-    int limit, n, i, first = 1;
+    char limit_s[8], kind[12] = "", id_s[12] = "";
+    int limit, n, i, shown = 0;
     MlHit hits[MATCH_LIMIT_MAX];
     char *mine;     /* 내 키워드 CSV */
     Buf b;
+    InviteTarget t;
+    int has_target = 0;
 
     if (!auth_require(req, res, &u))
         return;
@@ -367,9 +373,23 @@ static void handle_matches(Request *req, Response *res)
     if (limit <= 0 || limit > MATCH_LIMIT_MAX)
         limit = 12;
 
+    if (req_query(req, "kind", kind, sizeof kind) && kind[0]) {
+        req_query(req, "id", id_s, sizeof id_s);
+        if (!invite_target(kind, (unsigned)strtoul(id_s, NULL, 10), &t)) {
+            res_error(res, 404, "not_found", "모집글이나 스터디가 없습니다.");
+            return;
+        }
+        if (t.owner_id != u.id) {
+            res_error(res, 403, "not_allowed", "글쓴이(방장)만 팀원을 찾을 수 있습니다.");
+            return;
+        }
+        has_target = 1;
+    }
+
     mine = user_tag_csv(u.id);
-    /* 관리자는 팀을 꾸리지 않으므로 추천하지 않는다. 20점 미만은 비슷하지 않다고 본다. */
-    n = u.is_admin ? 0 : ml_match_users(u.id, 20, hits, limit);
+    /* 관리자는 팀을 꾸리지 않으므로 추천하지 않는다. 20점 미만은 비슷하지 않다고 본다.
+     * 대상이 있으면 이미 함께하는 사람을 빼야 하므로 넉넉히 받아 둔다. */
+    n = u.is_admin ? 0 : ml_match_users(u.id, 20, hits, has_target ? MATCH_LIMIT_MAX : limit);
     if (n < 0) {
         free(mine);
         res_error(res, 500, "model_error", "추천 모델을 만들 수 없습니다.");
@@ -380,12 +400,24 @@ static void handle_matches(Request *req, Response *res)
     buf_puts(&b, "{\"my_tags\":");
     write_csv_array(&b, mine);
     free(mine);
+    if (has_target) {
+        buf_puts(&b, ",\"target\":{");
+        json_kv_str(&b, "kind", t.kind);        buf_putc(&b, ',');
+        json_kv_str(&b, "subkind", t.subkind);  buf_putc(&b, ',');
+        json_kv_int(&b, "id", t.id);            buf_putc(&b, ',');
+        json_kv_str(&b, "title", t.title);      buf_putc(&b, ',');
+        json_kv_bool(&b, "open", t.open);
+        buf_putc(&b, '}');
+    }
     buf_puts(&b, ",\"members\":[");
 
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < n && shown < limit; i++) {
         Buf sql;
         MYSQL_RES *qr;
         MYSQL_ROW row;
+
+        if (has_target && invite_member_already(&t, hits[i].id))
+            continue;
 
         /* 회원 한 명의 공개 정보. 다섯 번째 열 shared_tags 는
          * "그 회원의 키워드(a) 중 나(o)도 고른 것" 을 자기 조인으로 구한다. */
@@ -407,11 +439,14 @@ static void handle_matches(Request *req, Response *res)
         buf_free(&sql);
         row = qr ? mysql_fetch_row(qr) : NULL;
         if (row) {
-            if (!first)
+            if (shown++)
                 buf_putc(&b, ',');
-            first = 0;
             buf_putc(&b, '{');
             json_kv_int(&b, "id", hits[i].id);                          buf_putc(&b, ',');
+            if (has_target) {
+                json_kv_bool(&b, "invited", invite_sent(&t, hits[i].id));
+                buf_putc(&b, ',');
+            }
             json_kv_str(&b, "nickname", row[0]);                        buf_putc(&b, ',');
             json_kv_str(&b, "department_name", row[1][0] ? row[1] : NULL); buf_putc(&b, ',');
             json_kv_str(&b, "college_name", row[2][0] ? row[2] : NULL); buf_putc(&b, ',');

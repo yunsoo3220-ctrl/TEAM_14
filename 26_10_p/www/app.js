@@ -19,6 +19,7 @@ const state = {
   aiEnabled: false, /* 서버에 ANTHROPIC_API_KEY 가 있을 때만 AI 메뉴·추천을 보인다 */
   colleges: [],     /* [{id, name, departments:[{id,name}]}] */
   tags: [],         /* [{category, label, tags:[{id,name}]}] 관심 키워드 */
+  unread: 0,        /* 안 읽은 알림 수 (사이드바·상단 배지) */
 };
 
 /* 서버의 kind 코드 → 화면 표시 이름 */
@@ -60,6 +61,42 @@ function toast(message) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
+}
+
+/* 확인 창. 브라우저의 confirm() 은 브라우저·설정에 따라 막혀 있으면 묻지도 않고 "취소" 로 끝나므로
+ * (예: 확인 창 차단, 일부 앱 안의 브라우저) 화면 안에 직접 그린다.
+ * 사용: if (!(await askConfirm('지울까요?'))) return;   확인 = true, 취소·바깥 누르기·Esc = false */
+function askConfirm(message, okLabel = '확인') {
+  return new Promise(resolve => {
+    const back = el('div', 'ask-back');
+    const box = el('div', 'ask-box');
+    box.setAttribute('role', 'alertdialog');
+    box.setAttribute('aria-modal', 'true');
+    const text = el('p', 'ask-text', message);
+    const ok = el('button', null, okLabel);
+    const no = el('button', 'ghost', '취소');
+    const row = el('div', 'row ask-buttons');
+    row.append(no, ok);
+    box.append(text, row);
+    back.append(box);
+    const before = document.activeElement;
+    const close = answer => {
+      document.removeEventListener('keydown', onKey, true);
+      back.remove();
+      if (before && before.focus) before.focus();
+      resolve(answer);
+    };
+    const onKey = ev => {
+      if (ev.key === 'Escape') { ev.preventDefault(); close(false); }
+      else if (ev.key === 'Tab') { ev.preventDefault(); (document.activeElement === ok ? no : ok).focus(); }   /* 두 버튼 안에서만 */
+    };
+    ok.onclick = () => close(true);
+    no.onclick = () => close(false);
+    back.onclick = ev => { if (ev.target === back) close(false); };
+    document.addEventListener('keydown', onKey, true);
+    document.body.append(back);
+    ok.focus();
+  });
 }
 
 /* <template id="..."> 의 내용을 복제해 돌려준다 (DocumentFragment) */
@@ -184,6 +221,7 @@ function paintChrome() {
   /* 관리자 메뉴는 관리자에게만, 내 프로필은 로그인한 사람에게만 */
   document.getElementById('nav-admin').hidden = !(me && me.is_admin);
   document.getElementById('nav-me').hidden = !me;
+  document.getElementById('nav-noti').hidden = !me;
   /* label 안의 첫 텍스트 노드만 바꾼다 (뒤의 <small>Sign in</small> 은 그대로 두기 위해) */
   document.getElementById('nav-login-label').firstChild.nodeValue =
     me ? '로그아웃' : '로그인 · 가입';
@@ -197,6 +235,14 @@ function paintChrome() {
     a.href = '#/login';
     who.append(a);
   } else {
+    /* 알림함 🔔 (안 읽은 알림이 있으면 빨간 숫자) */
+    const bell = el('a', 'bell');
+    bell.href = '#/notifications';
+    bell.title = '알림함';
+    bell.setAttribute('aria-label', '알림함');
+    bell.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0112 0c0 5 2 6.5 2 6.5H4S6 14 6 9z"/><path d="M10 19a2 2 0 004 0"/></svg>';   /* 고정 아이콘이라 innerHTML 을 써도 안전 */
+    bell.append(Object.assign(el('span', 'bell-badge'), { hidden: true }));
+    who.append(bell);
     const avatar = el('span', 'avatar', me.nickname.slice(0, 1));   /* 표시 이름 첫 글자 동그라미 */
     const box = el('span', 'whoami');
     box.append(
@@ -209,6 +255,45 @@ function paintChrome() {
   }
 
   paintHero();
+  paintUnread();
+  paintSuspend();
+}
+
+/* 정지된 회원이면 화면 위에 기간·사유 안내 띠를 보인다 */
+function paintSuspend() {
+  const box = document.getElementById('suspend-banner');
+  const me = state.me;
+  box.hidden = !(me && me.suspended_until);
+  if (box.hidden) return;
+  box.replaceChildren(`⛔ 계정이 ${me.suspended_until} 까지 정지되었습니다. 글은 볼 수 있지만 글쓰기·댓글·참여는 할 수 없습니다.`,
+                      el('small', null, `사유: ${me.suspend_reason || '-'}`));
+}
+
+/* 안 읽은 알림 수를 사이드바·상단 배지에 그린다 (99 넘으면 99+) */
+function paintUnread() {
+  const n = state.me ? state.unread : 0;
+  const text = n > 99 ? '99+' : String(n);
+  for (const b of document.querySelectorAll('[data-unread], .bell-badge')) {
+    b.hidden = !n;
+    b.textContent = text;
+  }
+  const bell = document.querySelector('.bell');
+  if (bell) bell.setAttribute('aria-label', n ? `알림함, 안 읽은 알림 ${n}개` : '알림함');
+}
+
+/* 서버에서 안 읽은 알림 수를 다시 받아 온다. 화면을 옮길 때와 1분마다 부른다. */
+async function refreshUnread() {
+  if (!state.me) return;
+  try {
+    /* /api/me 는 안 읽은 알림 수와 함께 정지 상태도 알려 준다 (관리자가 방금 정지·해제했을 수 있다) */
+    const me = await api('/api/me');
+    if (!me.user) return;
+    state.unread = me.unread_notifications || 0;
+    state.me.suspended_until = me.user.suspended_until;
+    state.me.suspend_reason = me.user.suspend_reason;
+    paintUnread();
+    paintSuspend();
+  } catch { /* 배지는 못 그려도 화면은 계속 쓸 수 있다 */ }
 }
 
 /* 상단 큰 인사 영역(히어로). 비로그인이면 서비스 소개, 로그인이면 인사와 소속 */
@@ -253,6 +338,7 @@ function paintHero() {
 async function logout() {
   await api('/api/logout', { method: 'POST' });
   state.me = null;
+  state.unread = 0;
   paintChrome();
   /* 해시가 바뀌면 hashchange 가 route() 를 부른다. 이미 목록이면 직접 부른다. */
   if (location.hash === '#/posts' || location.hash === '') route();
@@ -581,12 +667,17 @@ async function viewList(forceMine) {
 /* ══════════════════════════════════════════════════ 게시물 상세 */
 
 /* 댓글 한 줄. 내 댓글이거나 관리자면 [삭제] 버튼을 붙인다.
- * (버튼을 숨기는 것은 편의일 뿐이고, 실제 권한 검사는 서버가 한다) */
-function commentRow(c, onDelete) {
+ * (버튼을 숨기는 것은 편의일 뿐이고, 실제 권한 검사는 서버가 한다)
+ * badge = {userId, label} 을 주면 그 회원의 댓글에 이름을 강조하고 팻말을 단다 (예: 전공책 장터의 판매자) */
+function commentRow(c, onDelete, badge) {
   const wrap = el('div', 'comment');
   const head = el('div', 'comment-head');
 
-  head.append(el('strong', null, c.author_nickname));
+  if (badge && c.author_id === badge.userId) {
+    head.append(el('strong', 'comment-author-mark', c.author_nickname), el('span', 'comment-badge', badge.label));
+  } else {
+    head.append(el('strong', null, c.author_nickname));
+  }
   if (c.author_department) head.append(el('span', null, c.author_department));
   head.append(el('span', null, c.created_at));
 
@@ -1247,6 +1338,7 @@ async function viewAdmin() {
 
   const node = tpl('tpl-admin');
   const root = node.firstElementChild;
+  adminTabs(root.querySelector('[data-tabs]'), 'admin');
   render(node);
 
   /* ── 상단 요약 타일 */
@@ -1382,8 +1474,8 @@ async function viewAdmin() {
     }
   }
   aiRun.onclick = () => startAi(false);
-  aiForce.onclick = () => {
-    if (confirm('모든 게시물을 다시 분석합니다. API 사용량이 발생합니다. 계속할까요?')) startAi(true);
+  aiForce.onclick = async () => {
+    if (await askConfirm('모든 게시물을 다시 분석합니다. API 사용량이 발생합니다. 계속할까요?')) startAi(true);
   };
 
   /* ── 새 게시물 쓰기 폼 (+ 실시간 학과 예측) */
@@ -1702,6 +1794,10 @@ async function viewRecruit(id) {
   if (can_edit) {
     const ownerRow = root.querySelector('[data-owner]');
     ownerRow.hidden = false;
+    /* 팀원 찾기 (글쓴이만, 모집 중일 때) - 관리자가 남의 글을 볼 때는 보이지 않는다 */
+    const find = ownerRow.querySelector('[data-find]');
+    find.hidden = !(state.me && state.me.id === r.author_id && r.status === 'open');
+    find.href = `#/people/recruit/${id}`;
     const tg = ownerRow.querySelector('[data-toggle]');
     tg.textContent = r.status === 'open' ? '모집 마감하기' : '다시 모집하기';
     tg.onclick = async () => {
@@ -1712,7 +1808,7 @@ async function viewRecruit(id) {
       } catch (e) { toast(e.message); }
     };
     ownerRow.querySelector('[data-delete]').onclick = async () => {
-      if (!confirm('이 모집글을 지울까요? 댓글도 함께 지워집니다.')) return;
+      if (!(await askConfirm('이 모집글을 지울까요? 댓글도 함께 지워집니다.'))) return;
       try {
         await api(`/api/recruits/${id}`, { method: 'DELETE' });
         toast('지웠습니다.');
@@ -1896,7 +1992,7 @@ function studyMemberRow(m, study, canManage, reload) {
     if (!m.is_owner) {
       const out = el('button', 'ghost small danger', '내보내기');
       out.onclick = async () => {
-        if (!confirm(`${m.nickname} 님을 ${kindOf(study).n}에서 내보낼까요?`)) return;
+        if (!(await askConfirm(`${m.nickname} 님을 ${kindOf(study).n}에서 내보낼까요?`))) return;
         try {
           await api(`/api/studies/${study.id}/members/${m.user_id}`, { method: 'DELETE' });
           reload();
@@ -1961,7 +2057,7 @@ async function viewStudy(id, kind = 'study') {
   } else if (s.my_role && !isOwner) {
     const leave = el('button', 'ghost small', `${K.n} 나가기`);
     leave.onclick = async () => {
-      if (!confirm(`이 ${K.n}에서 나갈까요?`)) return;
+      if (!(await askConfirm(`이 ${K.n}에서 나갈까요?`))) return;
       try {
         await api(`/api/studies/${id}/members/${state.me.id}`, { method: 'DELETE' });
         toast(`${K.n}에서 나왔습니다.`);
@@ -1970,10 +2066,15 @@ async function viewStudy(id, kind = 'study') {
     };
     actions.append(leave);
   }
+  if (isOwner && !full) {
+    const find = el('a', 'btn small', '팀원 찾기');
+    find.href = `#/people/study/${id}`;
+    actions.append(find);
+  }
   if (can_manage) {
     const del = el('button', 'ghost small danger', `${K.n} 삭제`);
     del.onclick = async () => {
-      if (!confirm(`이 ${K.eul} 지울까요? 멤버 목록도 함께 지워집니다.`)) return;
+      if (!(await askConfirm(`이 ${K.eul} 지울까요? 멤버 목록도 함께 지워집니다.`))) return;
       try {
         await api(`/api/studies/${id}`, { method: 'DELETE' });
         toast('지웠습니다.');
@@ -2031,10 +2132,799 @@ async function viewStudy(id, kind = 'study') {
   render(node);
 }
 
+/* ═══════════════════════════════════════ 관리자 · 회원 관리 · 전체 게시물 */
+
+/* 관리자 화면 위의 탭 (운영 / 회원 관리 / 전체 게시물) */
+function adminTabs(nav, current) {
+  for (const [hash, key, label] of [['#/admin', 'admin', '운영'], ['#/admin/users', 'users', '회원 관리'],
+                                    ['#/admin/content', 'content', '전체 게시물']]) {
+    const a = el('a', key === current ? 'on' : null, label);
+    a.href = hash;
+    nav.append(a);
+  }
+}
+
+/* 관리자가 회원 알림함으로 메시지를 보내는 작은 입력칸. row 안에 열었다 닫는다.
+ * preset = {title, link} 를 주면 미리 채운다 (게시물 주인에게 보낼 때). 알림 종류는 서버에서 "admin". */
+function adminNotifyForm(row, user, preset = {}) {
+  row.querySelector('.admin-suspend')?.remove();   /* 정지 입력칸이 열려 있으면 닫고 */
+  const old = row.querySelector('.admin-notify');
+  if (old) { old.remove(); return; }   /* 다시 누르면 닫는다 */
+
+  const form = el('form', 'admin-notify stack-sm');
+  const title = el('input');
+  title.name = 'title';
+  title.maxLength = 100;
+  title.required = true;
+  title.value = preset.title || '';
+  title.placeholder = '제목 (예: 게시물 내용을 확인해 주세요)';
+  const body = el('textarea');
+  body.name = 'body';
+  body.rows = 3;
+  body.maxLength = 1000;
+  body.placeholder = '내용 (선택)';
+  const tl = el('label'); tl.append(el('span', null, `${user.nickname} 님에게 보낼 알림`), title);
+  const bl = el('label'); bl.append(el('span', null, '내용'), body);
+  const send = el('button', 'small', '알림 보내기');
+  const cancel = el('button', 'ghost small', '취소');
+  cancel.type = 'button';
+  cancel.onclick = () => form.remove();
+  const btns = el('div', 'row');
+  btns.append(send, cancel);
+  if (preset.link) btns.append(el('span', 'muted small', `누르면 이 글로 이동합니다 (${preset.link})`));
+  form.append(tl, bl, btns);
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    send.disabled = true;
+    try {
+      await api('/api/admin/notify', { method: 'POST', body: JSON.stringify({
+        user_id: user.id, title: title.value.trim(), body: body.value.trim(), link: preset.link || '' }) });
+      toast(`${user.nickname} 님의 알림함으로 보냈습니다.`);
+      form.remove();
+    } catch (e) { toast(e.message); send.disabled = false; }
+  };
+  row.append(form);
+  title.focus();
+}
+
+/* #/admin/users - 모든 회원 보기·찾기, 회원 추가·삭제, 알림 보내기 */
+async function viewAdminUsers() {
+  markNav('admin');
+  setPageTitle('관리자 · 회원 관리');
+  if (!state.me || !state.me.is_admin) return renderMessage('관리자만 볼 수 있습니다.');
+
+  const node = tpl('tpl-admin-users');
+  const root = node.firstElementChild;
+  adminTabs(root.querySelector('[data-tabs]'), 'users');
+  const listEl = root.querySelector('[data-list]');
+  const countEl = root.querySelector('[data-count]');
+  const q = root.querySelector('[data-q]');
+  const addForm = root.querySelector('[data-add]');
+  fillDeptSelect(addForm.querySelector('[data-dept]'));
+  root.querySelector('[data-toggle-add]').onclick = () => {
+    addForm.hidden = !addForm.hidden;
+    if (!addForm.hidden) addForm.elements.student_no.focus();
+  };
+  addForm.querySelector('[data-cancel]').onclick = () => { addForm.hidden = true; addForm.reset(); };
+  addForm.onsubmit = async ev => {
+    ev.preventDefault();
+    const v = formValues(addForm);
+    try {
+      const out = await api('/api/admin/users', { method: 'POST', body: JSON.stringify({
+        ...v, department_id: Number(v.department_id) || 0 }) });
+      toast(`${out.nickname} 님을 추가했습니다.`);
+      addForm.reset();
+      addForm.hidden = true;
+      reload();
+    } catch (e) { toast(e.message); }
+  };
+
+  function row(u) {
+    const r = el('div', 'admin-row');
+    const main = el('div', 'admin-row-main');
+    const who = el('div', 'admin-who');
+    const name = el('strong', null, `${u.nickname} `);
+    if (u.role === 'admin') name.append(el('span', 'tag admin', '관리자'));
+    if (u.suspended_until) name.append(el('span', 'tag suspended', `정지 중 · ${u.suspended_until} 까지`));
+    who.append(name,
+      el('span', null, [`${u.name} · ${u.student_no}`, u.department, u.email].filter(Boolean).join(' · ')),
+      el('span', null, `가입 ${u.created_at} · 모집글 ${u.recruits} · 스터디·멘토링 ${u.studies} · 전공책 ${u.books}`));
+    if (u.suspended_until) who.append(el('span', null, `정지 사유: ${u.suspend_reason || '-'}`));
+    const tools = el('div', 'admin-tools');
+    if (u.id !== state.me.id) {
+      const notify = el('button', 'ghost small', '📢 알림 보내기');
+      notify.onclick = () => adminNotifyForm(r, u);
+      tools.append(notify);
+    }
+    if (u.role === 'student' && u.suspended_until) {
+      const lift = el('button', 'ghost small', '🔓 정지 풀기');
+      lift.onclick = async () => {
+        if (!(await askConfirm(`${u.nickname} 님의 정지를 지금 풀까요?`))) return;
+        try {
+          await api(`/api/admin/users/${u.id}/suspend`, { method: 'DELETE' });
+          toast('정지를 풀었습니다. 회원에게 알림이 갔습니다.');
+          reload();
+        } catch (e) { toast(e.message); }
+      };
+      tools.append(lift);
+    } else if (u.role === 'student') {
+      const ban = el('button', 'ghost small danger', '⛔ 정지');
+      ban.onclick = () => suspendForm(r, u);
+      tools.append(ban);
+    }
+    if (u.role === 'student') {
+      const del = el('button', 'ghost small danger', '삭제');
+      del.onclick = async () => {
+        if (!(await askConfirm(`${u.nickname} (${u.name}, ${u.student_no}) 회원을 지울까요?\n` +
+                     '이 회원의 모집글·스터디·멘토링·전공책·댓글·알림이 모두 함께 지워지며 되돌릴 수 없습니다.'))) return;
+        try {
+          await api(`/api/admin/users/${u.id}`, { method: 'DELETE' });
+          toast('회원을 지웠습니다.');
+          reload();
+        } catch (e) { toast(e.message); }
+      };
+      tools.append(del);
+    }
+    main.append(el('span', 'avatar', u.nickname.slice(0, 1)), who, tools);
+    r.append(main);
+    return r;
+  }
+
+  /* 정지 입력칸: 기간(일)과 사유. 다시 누르면 닫는다 */
+  function suspendForm(r, u) {
+    const old = r.querySelector('.admin-suspend, .admin-notify');
+    if (old) { const same = old.classList.contains('admin-suspend'); old.remove(); if (same) return; }
+    const form = el('form', 'admin-notify admin-suspend stack-sm');
+    const days = el('select');
+    for (const d of [1, 3, 7, 14, 30, 90]) days.append(new Option(`${d}일`, d));
+    days.value = '7';
+    const custom = el('input');
+    custom.type = 'number'; custom.min = 1; custom.max = 365; custom.placeholder = '1~365일';
+    const reason = el('textarea');
+    reason.rows = 2; reason.maxLength = 300; reason.required = true;
+    reason.placeholder = '정지 사유 (회원 알림함으로 함께 보냅니다)';
+    const dl = el('label'); dl.append(el('span', null, '정지 기간'), days);
+    const cl = el('label'); cl.append(el('span', null, '또는 일수'), custom);
+    const rl = el('label'); rl.append(el('span', null, `${u.nickname} 님 정지 사유`), reason);
+    const go = el('button', 'small danger-fill', '정지하기');
+    const cancel = el('button', 'ghost small', '취소');
+    cancel.type = 'button';
+    cancel.onclick = () => form.remove();
+    const msg = el('p', 'form-msg', '');   /* 입력 오류·확인 안내를 눈에 보이게 적는 줄 */
+    const top = el('div', 'row'); top.append(dl, cl);
+    const btns = el('div', 'row'); btns.append(go, cancel, msg);
+    form.append(top, rl, btns);
+
+    /* 브라우저 기본 검사(말풍선)와 confirm 창은 눈에 띄지 않거나 막혀 있을 수 있어 쓰지 않는다.
+     * 대신 오류는 이 줄에 빨갛게 적고, 확인은 같은 버튼을 한 번 더 누르게 한다. */
+    form.noValidate = true;
+    let armed = false;
+    const disarm = () => { armed = false; go.textContent = '정지하기'; msg.textContent = ''; msg.className = 'form-msg'; };
+    const fail = (text, field) => {
+      disarm();
+      msg.textContent = text;
+      msg.className = 'form-msg error';
+      field.classList.add('invalid');
+      field.focus();
+    };
+    for (const f of [days, custom, reason]) f.addEventListener('input', () => { f.classList.remove('invalid'); disarm(); });
+    days.addEventListener('change', disarm);
+
+    form.onsubmit = async ev => {
+      ev.preventDefault();
+      const n = custom.value.trim() ? Number(custom.value) : Number(days.value);
+      if (!Number.isInteger(n) || n < 1 || n > 365) return fail('정지 기간은 1~365일로 정하세요.', custom);
+      if (!reason.value.trim()) return fail('정지 사유를 적어 주세요. 회원에게 알림으로 함께 보냅니다.', reason);
+      if (!armed) {
+        armed = true;
+        go.textContent = `${n}일 정지 확정`;
+        msg.textContent = `한 번 더 누르면 ${u.nickname} 님을 ${n}일 동안 정지합니다.`;
+        msg.className = 'form-msg warn';
+        return;
+      }
+      go.disabled = true;
+      go.textContent = '정지하는 중…';
+      try {
+        const out = await api(`/api/admin/users/${u.id}/suspend`, { method: 'POST',
+          body: JSON.stringify({ days: n, reason: reason.value.trim() }) });
+        toast(`${u.nickname} 님을 ${out.suspended_until} 까지 정지했습니다. 회원 알림함으로 알렸습니다.`);
+        reload();
+      } catch (e) {
+        go.disabled = false;
+        fail(e.message, reason);
+      }
+    };
+    r.append(form);
+    reason.focus();
+  }
+
+  async function reload() {
+    listEl.replaceChildren(...skeleton(4));
+    try {
+      const r = await api(`/api/admin/users${q.value.trim() ? `?q=${encodeURIComponent(q.value.trim())}` : ''}`);
+      countEl.textContent = `(${r.users.length})`;
+      listEl.replaceChildren(...(r.users.length ? r.users.map(row) : [el('p', 'empty', '찾는 회원이 없습니다.')]));
+    } catch (e) { listEl.replaceChildren(el('p', 'empty', e.message)); }
+  }
+  let timer = null;
+  q.oninput = () => { clearTimeout(timer); timer = setTimeout(reload, 300); };
+  render(node);
+  reload();
+}
+
+/* 전체 게시물의 종류별 이름·주소·주인 호칭 */
+const CONTENT_KIND = {
+  recruit:   { label: '팀원 모집',   path: 'recruits',  owner: '작성자', cls: 'kind-contest' },
+  study:     { label: '그룹 스터디', path: 'studies',   owner: '방장',   cls: 'kind-hackathon' },
+  mentoring: { label: '멘토링',      path: 'mentoring', owner: '방장',   cls: 'mentor' },
+  book:      { label: '전공책',      path: 'books',     owner: '판매자', cls: 'kind-etc' },
+};
+const contentStatus = it => it.type === 'recruit' ? (it.status === 'open' ? '모집 중' : '마감')
+  : it.type === 'book' ? BOOK_STATUS[it.status] : `${it.status}명`;
+
+/* #/admin/content - 회원이 쓴 모든 글과 주인(작성자·방장·판매자), 주인에게 알림 보내기 */
+async function viewAdminContent() {
+  markNav('admin');
+  setPageTitle('관리자 · 전체 게시물');
+  if (!state.me || !state.me.is_admin) return renderMessage('관리자만 볼 수 있습니다.');
+
+  const node = tpl('tpl-admin-content');
+  const root = node.firstElementChild;
+  adminTabs(root.querySelector('[data-tabs]'), 'content');
+  const listEl = root.querySelector('[data-list]');
+  const countEl = root.querySelector('[data-count]');
+  const q = root.querySelector('[data-q]');
+  const typeSel = root.querySelector('[data-type]');
+  const sortSel = root.querySelector('[data-sort]');
+  let items = [];
+
+  function row(it) {
+    const K = CONTENT_KIND[it.type];
+    const link = `#/${K.path}/${it.id}`;
+    const r = el('div', 'admin-row');
+    const main = el('div', 'admin-row-main');
+    const who = el('div', 'admin-who');
+    const title = el('strong');
+    const a = el('a', null, it.title);
+    a.href = link;
+    title.append(a);
+    const tags = el('div', 'item-top');
+    tags.style.marginBottom = '2px';
+    tags.append(el('span', `tag ${K.cls}`, K.label), el('span', 'tag plain', contentStatus(it)));
+    who.append(tags, title,
+      el('span', null, `${K.owner} ${it.owner_nickname} (${it.owner_student_no}) · ${it.created_at} · ` +
+                       (it.type === 'study' || it.type === 'mentoring' ? `멤버 ${it.count}명` : `댓글 ${it.count}개`)));
+    const tools = el('div', 'admin-tools');
+    const notify = el('button', 'ghost small', `📢 ${K.owner}에게 알림`);
+    notify.onclick = () => adminNotifyForm(r, { id: it.owner_id, nickname: it.owner_nickname },
+                                           { title: `관리자 안내: '${it.title}'`.slice(0, 100), link });
+    tools.append(notify);
+    main.append(who, tools);
+    r.append(main);
+    return r;
+  }
+
+  function paint() {
+    const sorted = [...items].sort((x, y) => sortSel.value === 'old'
+      ? x.created_at.localeCompare(y.created_at) : y.created_at.localeCompare(x.created_at));
+    countEl.textContent = `(${sorted.length})`;
+    listEl.replaceChildren(...(sorted.length ? sorted.map(row) : [el('p', 'empty', '게시물이 없습니다.')]));
+  }
+
+  async function reload() {
+    listEl.replaceChildren(...skeleton(4));
+    const qs = new URLSearchParams({ type: typeSel.value });
+    if (q.value.trim()) qs.set('q', q.value.trim());
+    try {
+      items = (await api(`/api/admin/content?${qs}`)).items;
+      paint();
+    } catch (e) { listEl.replaceChildren(el('p', 'empty', e.message)); }
+  }
+  let timer = null;
+  q.oninput = () => { clearTimeout(timer); timer = setTimeout(reload, 300); };
+  typeSel.onchange = reload;
+  sortSel.onchange = paint;
+  render(node);
+  reload();
+}
+
+/* ══════════════════════════════════════════════════ 알림함 */
+
+const NOTI_ICON = { invite: '✉', invite_accepted: '✅', admin: '📢', suspend: '⛔', unsuspend: '🔓' };
+const NOTI_KIND = { invite: '참여 권유', invite_accepted: '권유 수락', admin: '관리자 알림', suspend: '계정 정지', unsuspend: '정지 해제' };
+/* 누르면 바로 그 화면(link)으로 가는 알림. 나머지(관리자·정지 알림)는 자세히 보기 화면으로 */
+const NOTI_GO_LINK = new Set(['invite', 'invite_accepted']);
+/* 참여 권유 알림의 상태(서버 invite_state)별 버튼 글자. open 만 누를 수 있다 */
+const INVITE_BTN = { open: '참여하기', accepted: '✓ 참여함', member: '이미 참여 중', closed: '마감됨', gone: '지워진 글' };
+
+/* #/notifications - 내 알림. 누르면 읽음으로 표시하고 그 화면(link)으로 간다 */
+async function viewNotifications() {
+  markNav('notifications');
+  setPageTitle('알림함');
+  if (!state.me) return requireLogin('알림을 보려면 로그인하세요.');
+
+  const node = tpl('tpl-notifications');
+  const root = node.firstElementChild;
+  const listEl = root.querySelector('[data-list]');
+  const countEl = root.querySelector('[data-count]');
+  const readAll = root.querySelector('[data-read-all]');
+  listEl.append(...skeleton(3));
+  render(node);
+
+  const setUnread = n => {
+    state.unread = n;
+    paintUnread();
+    countEl.textContent = n ? `(안 읽음 ${n})` : '';
+    readAll.disabled = !n;
+  };
+
+  function row(n) {
+    const item = el('div', 'noti' + (n.read ? '' : ' unread'));
+    item.tabIndex = 0;
+    item.setAttribute('role', 'link');
+    const main = el('div', 'noti-main');
+    main.append(el('strong', null, `${NOTI_ICON[n.kind] || '🔔'} ${n.title}`));
+    if (n.body) main.append(el('p', null, n.body));
+    main.append(el('small', null, (NOTI_GO_LINK.has(n.kind) ? '' : `${n.actor_nickname || '관리자'} · `) + n.created_at +
+                                  (NOTI_GO_LINK.has(n.kind) ? '' : ' · 눌러서 자세히 보기')));
+    const tools = el('div', 'noti-tools');
+
+    /* 참여 권유: [참여하기] 를 누르면 바로 참여한다
+     * (스터디·멘토링은 멤버로 가입, 팀원 모집글은 참여 댓글을 남김 - 서버 api_invite.c) */
+    if (n.kind === 'invite' && n.invite_state) {
+      const join = el('button', 'small', INVITE_BTN[n.invite_state] || '참여하기');
+      join.type = 'button';
+      /* 참여함·이미 참여 중은 초록, 마감·지워진 글은 회색 */
+      const lock = text => {
+        join.disabled = true;
+        join.classList.toggle('done', text === INVITE_BTN.accepted || text === INVITE_BTN.member);
+        join.textContent = text;
+      };
+      if (n.invite_state !== 'open') lock(INVITE_BTN[n.invite_state]);
+      join.onclick = async ev => {
+        ev.stopPropagation();
+        const isRecruit = n.link && n.link.startsWith('#/recruits/');
+        if (!(await askConfirm(isRecruit ? '이 모집글에 참여할까요?\n글쓴이에게 참여 댓글과 알림이 갑니다.'
+                               : '이 모임에 바로 참여할까요?'))) return;
+        join.disabled = true;
+        try {
+          const out = await api(`/api/notifications/${n.id}/accept`, { method: 'POST' });
+          lock(INVITE_BTN.accepted);
+          n.invite_state = 'accepted';
+          if (!n.read) { n.read = true; item.classList.remove('unread'); refreshUnread(); }
+          toast(out.kind === 'recruit' ? '참여 댓글을 남기고 글쓴이에게 알렸습니다.' : '참여했습니다! 글쓴이에게도 알렸습니다.');
+          location.hash = out.link;   /* 참여한 화면으로 */
+        } catch (e) {
+          toast(e.message);
+          if (e.code === 'already_accepted') lock(INVITE_BTN.accepted);
+          else if (e.code === 'gone') lock(INVITE_BTN.gone);
+          else if (e.code === 'closed' || e.code === 'study_full') lock(INVITE_BTN.closed);
+          else join.disabled = false;
+        }
+      };
+      tools.append(join);
+    }
+
+    const del = el('button', 'ghost small', '삭제');
+    del.type = 'button';
+    del.onclick = async ev => {
+      ev.stopPropagation();   // 알림을 누른 것으로 치지 않게
+      try {
+        const out = await api(`/api/notifications/${n.id}`, { method: 'DELETE' });
+        item.remove();
+        setUnread(out.unread);
+        if (!listEl.childElementCount) listEl.append(el('p', 'empty', '알림이 없습니다.'));
+      } catch (e) { toast(e.message); }
+    };
+    const open = async () => {
+      if (!NOTI_GO_LINK.has(n.kind)) { location.hash = `#/notifications/${n.id}`; return; }
+      if (!n.read) {
+        try { setUnread((await api(`/api/notifications/${n.id}/read`, { method: 'POST' })).unread); }
+        catch { /* 읽음 표시가 안 돼도 이동은 한다 */ }
+        n.read = true;
+        item.classList.remove('unread');
+      }
+      if (n.link && n.link.startsWith('#/')) location.hash = n.link;   /* 사이트 안 화면으로만 */
+    };
+    item.onclick = open;
+    item.onkeydown = ev => { if (ev.key === 'Enter') open(); };
+    tools.append(del);
+    item.append(el('span', 'noti-dot'), main, tools);
+    return item;
+  }
+
+  readAll.onclick = async () => {
+    try {
+      setUnread((await api('/api/notifications/read-all', { method: 'POST' })).unread);
+      for (const it of listEl.querySelectorAll('.noti.unread')) it.classList.remove('unread');
+    } catch (e) { toast(e.message); }
+  };
+
+  try {
+    const r = await api('/api/notifications');
+    setUnread(r.unread);
+    listEl.replaceChildren(...(r.notifications.length
+      ? r.notifications.map(row)
+      : [el('p', 'empty', '알림이 없습니다. 다른 회원이 참여를 권유하면 여기에 표시됩니다.')]));
+  } catch (e) {
+    listEl.replaceChildren(el('p', 'empty', e.message));
+  }
+}
+
+/* #/notifications/{id} - 알림 하나 자세히 (연 순간 읽음으로 표시) */
+async function viewNotification(id) {
+  markNav('notifications');
+  setPageTitle('알림');
+  if (!state.me) return requireLogin('알림을 보려면 로그인하세요.');
+
+  let data;
+  try { data = await api(`/api/notifications/${id}`); }
+  catch (e) { return renderMessage(e.message); }
+  const n = data.notification;
+  state.unread = data.unread;
+  paintUnread();
+
+  const node = tpl('tpl-notification');
+  const root = node.firstElementChild;
+  root.querySelector('[data-tags-top]').append(
+    el('span', n.kind === 'suspend' ? 'tag suspended' : 'tag owner', NOTI_KIND[n.kind] || '알림'));
+  root.querySelector('[data-title]').textContent = `${NOTI_ICON[n.kind] || '🔔'} ${n.title}`;
+  root.querySelector('[data-actor]').textContent = n.actor_nickname || '관리자';
+  root.querySelector('[data-created]').textContent = n.created_at;
+  root.querySelector('[data-body]').textContent = n.body || '내용이 없습니다.';
+
+  const actions = root.querySelector('[data-actions]');
+  if (n.link && n.link.startsWith('#/')) {
+    const go = el('a', 'btn small', '관련 화면으로 가기 →');
+    go.href = n.link;
+    actions.append(go);
+  }
+  const del = el('button', 'ghost small', '이 알림 지우기');
+  del.onclick = async () => {
+    if (!(await askConfirm('이 알림을 지울까요?'))) return;
+    try {
+      await api(`/api/notifications/${n.id}`, { method: 'DELETE' });
+      toast('지웠습니다.');
+      location.hash = '#/notifications';
+    } catch (e) { toast(e.message); }
+  };
+  actions.append(del);
+  render(node);
+}
+
+/* ══════════════════════════════════════════════════ 전공책 장터 */
+
+const BOOK_STATUS = { selling: '판매 중', reserved: '예약 중', sold: '판매 완료' };
+const BOOK_STATUS_TAG = { selling: 'tag ok', reserved: 'tag warn', sold: 'tag plain' };
+const BOOK_COND = { new: '새 책', good: '깨끗함', fair: '필기 조금', poor: '필기 많음' };
+const BOOK_PHOTO_MAX = 5;
+const photoUrl = id => `/api/book-photos/${id}`;
+const priceText = n => (n ? `${n.toLocaleString('ko-KR')}원` : '나눔');
+
+/* 학과 선택 상자에 단과대학별 학과를 채운다 (optgroup 으로 묶음) */
+function fillDeptSelect(sel) {
+  for (const c of state.colleges) {
+    const group = document.createElement('optgroup');
+    group.label = c.name;
+    for (const d of c.departments) group.append(new Option(d.name, d.id));
+    sel.append(group);
+  }
+}
+
+/* 책 목록 카드: 대표 사진, 판매 상태·책 상태, 제목, 저자·과목, 가격 */
+function bookCard(b) {
+  const a = el('a', 'book-card' + (b.status === 'sold' ? ' sold' : ''));
+  a.href = `#/books/${b.id}`;
+
+  const thumb = el('div', 'book-thumb');
+  if (b.photo_id) {
+    const img = el('img');
+    img.src = photoUrl(b.photo_id);
+    img.alt = '';
+    img.loading = 'lazy';
+    thumb.append(img);
+    if (b.photo_count > 1) thumb.append(el('span', 'photo-n', `📷 ${b.photo_count}`));
+  } else {
+    thumb.append(el('span', null, '📚'));
+  }
+
+  const body = el('div', 'book-body');
+  const tags = el('div', 'item-top');
+  tags.append(el('span', BOOK_STATUS_TAG[b.status], BOOK_STATUS[b.status]),
+              el('span', 'tag cond', BOOK_COND[b.condition]));
+  if (state.me && state.me.id === b.seller_id) tags.append(el('span', 'tag owner', '내 책'));
+  body.append(tags, el('h3', null, b.title));
+  const sub = [b.author, b.course].filter(Boolean).join(' · ');
+  if (sub) body.append(el('p', 'book-sub', sub));
+  body.append(el('p', 'book-price' + (b.price ? '' : ' free'), priceText(b.price)));
+  const meta = el('div', 'item-meta');
+  meta.append(el('span', null, b.seller_nickname), el('span', null, b.created_at.slice(5, 10).replace('-', '/')));
+  if (b.comment_count) meta.append(el('span', null, `문의 ${b.comment_count}`));
+  body.append(meta);
+
+  a.append(thumb, body);
+  return a;
+}
+
+/* #/books - 책 목록 (검색, 학과, 판매 상태, 정렬) */
+async function viewBooks() {
+  markNav('books');
+  setPageTitle('전공책 장터');
+
+  const node = tpl('tpl-books');
+  const root = node.firstElementChild;
+  const listEl = root.querySelector('[data-list]');
+  const countEl = root.querySelector('[data-count]');
+  const f = name => root.querySelector(`[data-f="${name}"]`);
+  fillDeptSelect(f('dept'));
+  if (!state.me) {
+    root.querySelector('[data-new]').href = '#/login';
+    f('status').querySelector('[value="mine"]').disabled = true;
+  }
+
+  async function reload() {
+    listEl.replaceChildren(...skeleton(6, 'sk-reco'));
+    const st = f('status').value;
+    const qs = new URLSearchParams({ sort: f('sort').value, status: st === 'mine' ? 'all' : st });
+    if (f('q').value.trim()) qs.set('q', f('q').value.trim());
+    if (f('dept').value) qs.set('dept', f('dept').value);
+    if (st === 'mine') qs.set('mine', '1');
+    try {
+      const r = await api(`/api/books?${qs}`);
+      countEl.textContent = `(${r.books.length})`;
+      listEl.replaceChildren(...(r.books.length
+        ? r.books.map(bookCard)
+        : [el('p', 'empty', st === 'mine' ? '아직 올린 판매 글이 없습니다.'
+                                          : '조건에 맞는 책이 없습니다. 다 본 전공책을 올려 보세요.')]));
+    } catch (e) {
+      listEl.replaceChildren(el('p', 'empty', e.message));
+    }
+  }
+  /* 검색어는 입력을 멈추고 0.3초 뒤에 찾는다 (글자마다 요청하지 않게) */
+  let timer = null;
+  f('q').oninput = () => { clearTimeout(timer); timer = setTimeout(reload, 300); };
+  root.querySelector('[data-filters]').onsubmit = ev => { ev.preventDefault(); reload(); };
+  for (const k of ['dept', 'status', 'sort']) f(k).onchange = reload;
+  render(node);
+  reload();
+}
+
+/* 사진 파일을 긴 변 1280px 이하 JPEG data URL 로 줄인다 (휴대폰 사진은 몇 MB 라 그대로 올리면 무겁다).
+ * 서버 한도(1MB)를 넘으면 화질을 낮춰 다시 만든다. */
+async function shrinkPhoto(file, maxSide = 1280) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, fail) => {
+      const im = new Image();
+      im.onload = () => ok(im);
+      im.onerror = () => fail(new Error('이미지를 읽을 수 없습니다. JPG·PNG 사진을 골라 주세요.'));
+      im.src = url;
+    });
+    const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.naturalWidth * scale);
+    canvas.height = Math.round(img.naturalHeight * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';   /* 투명한 PNG 의 배경을 흰색으로 */
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    for (const q of [0.82, 0.7, 0.55, 0.4]) {
+      const data = canvas.toDataURL('image/jpeg', q);
+      if (data.length < 1300 * 1024) return data;
+    }
+    throw new Error('사진이 너무 큽니다.');
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/* #/books/new - 판매 글 쓰기 (사진은 카메라로 찍거나 앨범에서 고른다) */
+function viewBookNew() {
+  markNav('books');
+  setPageTitle('책 팔기');
+  if (!state.me) return requireLogin('책을 팔려면 로그인하세요.');
+
+  const node = tpl('tpl-book-new');
+  const form = node.querySelector('[data-form]');
+  const picker = node.querySelector('[data-photos]');
+  const countEl = node.querySelector('[data-photo-count]');
+  const camera = node.querySelector('[data-camera]');
+  const gallery = node.querySelector('[data-gallery]');
+  const deptSel = node.querySelector('[data-dept]');
+  fillDeptSelect(deptSel);
+  if (state.me.department_id) deptSel.value = String(state.me.department_id);   /* 기본은 내 학과 */
+
+  const photos = [];   /* 줄인 사진 data URL 목록 (순서 = 올릴 순서, 첫 장이 대표) */
+  let busy = 0;        /* 줄이는 중인 사진 수 */
+
+  function paint() {
+    picker.replaceChildren(...photos.map((data, i) => {
+      const slot = el('div', 'photo-slot');
+      const img = el('img');
+      img.src = data;
+      img.alt = `사진 ${i + 1}`;
+      const x = el('button', 'photo-x', '×');
+      x.type = 'button';
+      x.setAttribute('aria-label', `사진 ${i + 1} 빼기`);
+      x.onclick = () => { photos.splice(i, 1); paint(); };
+      slot.append(img, x);
+      if (i === 0) slot.append(el('span', 'photo-main', '대표'));
+      return slot;
+    }), ...Array.from({ length: busy }, () => el('div', 'photo-slot busy', '줄이는 중…')));
+    countEl.textContent = `${photos.length} / ${BOOK_PHOTO_MAX}장 · 첫 사진이 대표 사진`;
+    const full = photos.length + busy >= BOOK_PHOTO_MAX;
+    camera.disabled = gallery.disabled = full;
+  }
+
+  async function addFiles(input) {
+    const files = [...input.files].slice(0, BOOK_PHOTO_MAX - photos.length - busy);
+    input.value = '';   /* 같은 파일을 다시 골라도 change 가 오게 */
+    if (input.files.length > files.length) toast(`사진은 ${BOOK_PHOTO_MAX}장까지 올릴 수 있습니다.`);
+    busy += files.length;
+    paint();
+    for (const file of files) {
+      try { photos.push(await shrinkPhoto(file)); }
+      catch (e) { toast(e.message); }
+      busy--;
+      paint();
+    }
+  }
+  camera.onchange = () => addFiles(camera);
+  gallery.onchange = () => addFiles(gallery);
+  paint();
+
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    if (busy) return toast('사진을 준비하는 중입니다. 잠시 뒤에 다시 눌러 주세요.');
+    const v = formValues(form);
+    if (!photos.length && !(await askConfirm('사진 없이 올릴까요? 사진이 있으면 훨씬 빨리 팔립니다.'))) return;
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.textContent = '올리는 중…';
+    try {
+      const out = await api('/api/books', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: v.title, author: v.author, course: v.course,
+          department_id: Number(v.department_id) || null, price: Number(v.price || 0),
+          condition: v.condition, description: v.description, photos,
+        }),
+      });
+      toast('판매 글을 올렸습니다.');
+      location.hash = `#/books/${out.id}`;
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false;
+      btn.textContent = '판매 글 올리기';
+    }
+  };
+  render(node);
+}
+
+/* #/books/{id} - 상세: 사진, 책 정보, 판매자의 상태 변경·삭제, 문의 댓글 */
+async function viewBook(id) {
+  markNav('books');
+  setPageTitle('전공책 장터');
+
+  let data;
+  try { data = await api(`/api/books/${id}`); }
+  catch (e) { return renderMessage(e.message); }
+
+  const { book: b, description, photos, can_manage, comments } = data;
+  const node = tpl('tpl-book');
+  const root = node.firstElementChild;
+
+  /* 사진: 큰 사진 하나 + 아래 작은 사진을 누르면 바뀐다 */
+  if (photos.length) {
+    const gal = root.querySelector('[data-gallery]');
+    const main = gal.querySelector('[data-main]');
+    const thumbs = gal.querySelector('[data-thumbs]');
+    gal.hidden = false;
+    const show = i => {
+      main.src = photoUrl(photos[i]);
+      main.alt = `${b.title} 사진 ${i + 1}`;
+      [...thumbs.children].forEach((t, j) => t.classList.toggle('on', i === j));
+    };
+    if (photos.length > 1) {
+      thumbs.append(...photos.map((pid, i) => {
+        const t = el('button');
+        t.type = 'button';
+        t.setAttribute('aria-label', `사진 ${i + 1} 보기`);
+        const img = el('img');
+        img.src = photoUrl(pid);
+        img.alt = '';
+        t.append(img);
+        t.onclick = () => show(i);
+        return t;
+      }));
+    }
+    show(0);
+  }
+
+  root.querySelector('[data-tags-top]').append(
+    el('span', BOOK_STATUS_TAG[b.status], BOOK_STATUS[b.status]),
+    el('span', 'tag cond', BOOK_COND[b.condition]));
+  root.querySelector('[data-title]').textContent = b.title;
+  const price = root.querySelector('[data-price]');
+  price.textContent = priceText(b.price);
+  price.classList.toggle('free', !b.price);
+  root.querySelector('[data-seller]').textContent =
+    b.seller_nickname + (b.seller_department ? ` · ${b.seller_department}` : '');
+  root.querySelector('[data-author]').textContent = b.author || '-';
+  root.querySelector('[data-course]').textContent = b.course || '-';
+  root.querySelector('[data-dept]').textContent = b.department || '-';
+  root.querySelector('[data-created]').textContent = b.created_at;
+  root.querySelector('[data-description]').textContent = description || '설명이 없습니다.';
+
+  /* 판매자·관리자: 판매 상태 바꾸기, 삭제 */
+  if (can_manage) {
+    const box = root.querySelector('[data-owner]');
+    box.hidden = false;
+    const sel = box.querySelector('[data-status]');
+    sel.value = b.status;
+    sel.onchange = async () => {
+      try {
+        await api(`/api/books/${id}/status`, { method: 'PUT', body: JSON.stringify({ status: sel.value }) });
+        toast(sel.value === 'sold' ? '판매 완료로 바꿨습니다. 30일 뒤 자동으로 지워집니다.'
+                                   : `${BOOK_STATUS[sel.value]}(으)로 바꿨습니다.`);
+        viewBook(id);
+      } catch (e) { toast(e.message); sel.value = b.status; }
+    };
+    box.querySelector('[data-delete]').onclick = async () => {
+      if (!(await askConfirm('이 판매 글을 지울까요? 사진과 문의 댓글도 함께 지워집니다.'))) return;
+      try {
+        await api(`/api/books/${id}`, { method: 'DELETE' });
+        toast('지웠습니다.');
+        location.hash = '#/books';
+      } catch (e) { toast(e.message); }
+    };
+  }
+
+  /* 문의 댓글 (게시물 상세의 commentRow 를 재사용, 삭제 API 만 다르다) */
+  const listEl = root.querySelector('[data-comments]');
+  const countEl = root.querySelector('[data-count]');
+  const paint = items => {
+    countEl.textContent = `(${items.length})`;
+    listEl.replaceChildren(...(items.length
+      ? items.map(c => commentRow(c, async cid => {
+          try {
+            await api(`/api/book-comments/${cid}`, { method: 'DELETE' });
+            paint((await api(`/api/books/${id}`)).comments);
+          } catch (e) { toast(e.message); }
+        }, { userId: b.seller_id, label: '판매자' }))
+      : [el('p', 'empty', '아직 문의가 없습니다.')]));
+  };
+  paint(comments);
+
+  const form = root.querySelector('[data-comment-form]');
+  const ta = form.querySelector('textarea');
+  const reason = root.querySelector('[data-reason]');
+  if (!state.me) {
+    ta.disabled = true;
+    form.querySelector('button').disabled = true;
+    reason.textContent = '로그인 후 문의할 수 있습니다.';
+    reason.classList.add('blocked');
+  } else {
+    reason.textContent = `${state.me.nickname} 이름으로 씁니다.`;
+  }
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    try {
+      await api(`/api/books/${id}/comments`, { method: 'POST', body: JSON.stringify({ body: text }) });
+      ta.value = '';
+      paint((await api(`/api/books/${id}`)).comments);
+    } catch (e) { toast(e.message); }
+  };
+
+  render(node);
+}
+
 /* ══════════════════════════════════════════ 팀원 찾기 · 내 프로필 */
 
 /* 잘 맞는 회원 카드: 아바타, 소속, 점수 게이지, 키워드(겹치는 것 강조), ♥ 관계, 자기소개 */
-function personCard(m) {
+function personCard(m, target) {
   const c = el('article', 'person-card');
   const head = el('div', 'person-head');
   const av = el('span', 'avatar lg', m.nickname.slice(0, 1));
@@ -2056,30 +2946,77 @@ function personCard(m) {
   if (m.shared_tags.length)
     c.append(el('p', 'person-why', `공통 키워드 ${m.shared_tags.length}개 · ${m.shared_tags.join(', ')}`));
   if (m.bio) c.append(el('p', 'person-bio', m.bio));
-  if (m.open_recruits) {
-    const a = el('a', 'small', `이 회원의 모집글 ${m.open_recruits}건 보기 →`);
-    a.href = '#/recruits';
-    c.append(a);
+
+  /* 참여 권유: 누르면 서버가 그 회원의 학교 메일로 안내를 보낸다. 한 번 보내면 다시 누를 수 없다
+   * (서버도 같은 모임·같은 회원에게 두 번 보내지 않는다). */
+  if (target) {
+    const btn = el('button', 'small invite-btn');
+    btn.type = 'button';
+    const done = () => {
+      btn.disabled = true;
+      btn.classList.add('sent');
+      btn.textContent = '✓ 권유 보냄';
+    };
+    if (m.invited) done();
+    else if (!target.open) { btn.disabled = true; btn.textContent = '모집 마감'; }
+    else {
+      btn.textContent = '✉ 참여 권유';
+      btn.onclick = async () => {
+        if (!(await askConfirm(`${m.nickname} 님에게 '${target.title}' 참여를 권유할까요?\n알림함과 학교 메일로 안내가 가며, 한 번만 보낼 수 있습니다.`))) return;
+        btn.disabled = true;
+        btn.textContent = '보내는 중…';
+        try {
+          const out = await api('/api/invitations', { method: 'POST',
+            body: JSON.stringify({ kind: target.kind, id: target.id, user_id: m.id }) });
+          m.invited = true;
+          done();
+          toast(out.mailed ? `${m.nickname} 님의 알림함과 메일로 참여 권유를 보냈습니다.`
+                           : `${m.nickname} 님의 알림함으로 참여 권유를 보냈습니다.`);
+        } catch (e) {
+          if (e.code === 'already_invited') { m.invited = true; done(); }
+          else { btn.disabled = false; btn.textContent = '✉ 참여 권유'; }
+          toast(e.message);
+        }
+      };
+    }
+    c.append(btn);
   }
   return c;
 }
 
-/* #/people - 나와 성향이 비슷한 회원 (학생만) */
-async function viewPeople() {
-  markNav('people');
+/* 권유 대상 종류별 이름과 돌아갈 주소 (서버의 target.subkind) */
+const INVITE_KIND = {
+  recruit:   { label: '팀원 모집',   path: 'recruits',  nav: 'recruits' },
+  study:     { label: '그룹 스터디', path: 'studies',   nav: 'studies' },
+  mentoring: { label: '멘토링',      path: 'mentoring', nav: 'mentoring' },
+};
+
+/* #/people/{recruit|study}/{id} - 내 모집글·스터디·멘토링에 맞는 회원 찾기 + 참여 권유 (글쓴이·방장) */
+async function viewPeople(kind, id) {
+  markNav(kind === 'recruit' ? 'recruits' : 'studies');
   setPageTitle('팀원 찾기');
-  if (!state.me) return requireLogin('나와 맞는 회원을 보려면 로그인하세요.');
-  if (state.me.is_admin) return renderMessage('팀원 추천은 학생 계정에서 볼 수 있습니다.');
+  if (!state.me) return requireLogin('팀원을 찾으려면 로그인하세요.');
+  if (state.me.is_admin) return renderMessage('팀원 찾기는 학생 계정에서 쓸 수 있습니다.');
 
   const node = tpl('tpl-people');
   const root = node.firstElementChild;
   const list = root.querySelector('[data-list]');
   const mine = root.querySelector('[data-my-tags]');
+  const back = root.querySelector('[data-back]');
+  back.textContent = '← 돌아가기';
+  back.href = kind === 'recruit' ? `#/recruits/${id}` : `#/studies/${id}`;
   list.append(...skeleton(6, 'sk-reco'));
   render(node);
 
   try {
-    const r = await api('/api/members/matches?limit=24');
+    const r = await api(`/api/members/matches?limit=24&kind=${kind}&id=${id}`);
+    const K = INVITE_KIND[r.target.subkind] || INVITE_KIND.recruit;
+    markNav(K.nav);
+    setPageTitle(`${K.label} · 팀원 찾기`);
+    back.textContent = `← ${r.target.title}`;
+    back.href = `#/${K.path}/${id}`;
+    root.querySelector('[data-heading]').textContent = `'${r.target.title}' 에 함께할 회원`;
+
     mine.replaceChildren(el('span', 'muted small', '내 키워드'),
       ...(r.my_tags.length ? r.my_tags.map(t => el('span', 'ttag hit', t))
                            : [el('span', 'small', '아직 고르지 않았습니다')]));
@@ -2089,7 +3026,7 @@ async function viewPeople() {
       return;
     }
     list.replaceChildren(...(r.members.length
-      ? r.members.map(personCard)
+      ? r.members.map(m => personCard(m, r.target))
       : [el('p', 'empty', '아직 비슷한 회원이 없습니다.')]));
   } catch (e) {
     list.replaceChildren(el('p', 'empty', e.message));
@@ -2161,6 +3098,7 @@ async function viewAi() {
  * 처음 접속(해시 없음)이면 '#/posts' 로 본다. 순서가 중요하다: 구체적인 경로를 먼저 검사한다. */
 function route() {
   closeSidebar();   /* 모바일에서 메뉴를 누른 뒤 사이드바가 열린 채로 남지 않게 */
+  refreshUnread();
   const parts = (location.hash || '#/posts').slice(2).split('/');
 
   /* 히어로는 목록 화면에만 보인다. 상세·로그인·관리자 화면은 바로 본문부터. */
@@ -2175,6 +3113,8 @@ function route() {
     if (state.me) { location.hash = '#/posts'; return; }
     return viewAuth(true);
   }
+  if (parts[0] === 'admin' && parts[1] === 'users') return viewAdminUsers();
+  if (parts[0] === 'admin' && parts[1] === 'content') return viewAdminContent();
   if (parts[0] === 'admin') return viewAdmin();
   if (parts[0] === 'mine') return viewList(true);
   if (parts[0] === 'reco') return viewReco(parts[1]);
@@ -2187,7 +3127,13 @@ function route() {
   if (parts[0] === 'mentoring' && parts[1] === 'new') return viewStudyNew('mentoring');
   if (parts[0] === 'mentoring' && parts[1]) return viewStudy(Number(parts[1]), 'mentoring');
   if (parts[0] === 'mentoring') return viewStudies('mentoring');
-  if (parts[0] === 'people') return viewPeople();
+  if (parts[0] === 'books' && parts[1] === 'new') return viewBookNew();
+  if (parts[0] === 'books' && parts[1]) return viewBook(Number(parts[1]));
+  if (parts[0] === 'books') return viewBooks();
+  if (parts[0] === 'notifications' && parts[1]) return viewNotification(Number(parts[1]));
+  if (parts[0] === 'notifications') return viewNotifications();
+  if (parts[0] === 'people' && parts[2]) return viewPeople(parts[1], Number(parts[2]));
+  if (parts[0] === 'people') { location.hash = '#/recruits'; return; }   /* 예전 메뉴 주소 */
   if (parts[0] === 'ai') return viewAi();
   if (parts[0] === 'me') return viewMe();
   if (parts[0] === 'posts' && parts[1]) return viewDetail(Number(parts[1]));
@@ -2223,6 +3169,7 @@ async function boot() {
     ]);
     state.tags = tags.groups;
     state.me = me.user;
+    state.unread = me.unread_notifications || 0;
     state.aiEnabled = !!me.ai_enabled;   /* !! 는 어떤 값이든 true/false 로 바꾼다 */
     state.colleges = depts.colleges;
   } catch (e) {
@@ -2232,6 +3179,8 @@ async function boot() {
 
   paintChrome();
   window.addEventListener('hashchange', route);   /* 이후 주소의 # 가 바뀔 때마다 route() */
+  /* 화면을 켜 둔 채 기다리는 동안 온 알림도 보이게 1분마다 확인한다 (탭이 가려져 있으면 건너뜀) */
+  setInterval(() => { if (!document.hidden) refreshUnread(); }, 60000);
   route();                                         /* 지금 주소로 첫 화면 */
 }
 

@@ -14,7 +14,7 @@
 
 #include "common.h"
 
-#define HTTP_MAX_BODY  (512 * 1024)   /* 요청 본문 최대 크기(512KB). 넘으면 413 으로 거절 */
+#define HTTP_MAX_BODY  (8 * 1024 * 1024)   /* 요청 본문 최대 크기(8MB, 전공책 사진 5장). 넘으면 413 으로 거절 */
 #define HTTP_PATH_MAX  512            /* 요청 경로 최대 길이 */
 
 /* 파싱된 HTTP 요청 한 건 */
@@ -25,6 +25,7 @@ typedef struct {
     char   host[128];                /* Host 헤더 (포트 포함 가능) */
     char   cookie[8192];             /* Cookie 헤더 원문 ("a=1; b=2" 형태). localhost 는 다른 개발 서버의 쿠키까지 섞여 길어질 수 있다 */
     char   content_type[128];        /* Content-Type 헤더 (예: application/json) */
+    char   fwd_proto[8];             /* X-Forwarded-Proto 헤더 (앞단 프록시가 https 로 받았으면 "https") */
     char   client_ip[48];            /* 접속한 클라이언트의 IP 주소 문자열 */
     char  *body;                     /* 본문 (NUL 종료, 없으면 NULL) */
     size_t body_len;                 /* 본문 바이트 수 */

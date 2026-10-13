@@ -412,7 +412,7 @@ static void handle_study_delete(Request *req, Response *res, unsigned gid)
 /* gid 스터디에 uid 회원을 role 로 넣는다. 정원 검사와 INSERT 를 한 트랜잭션으로 묶어
  * 두 사람이 동시에 마지막 자리에 들어오는 일을 막는다 (db_begin 이 커밋까지 연결 잠금을 쥔다).
  * 성공하면 1, 실패하면 응답을 채우고 0. */
-static int add_member(Response *res, unsigned gid, unsigned uid, const char *role)
+int study_add_member(Response *res, unsigned gid, unsigned uid, const char *role)
 {
     Buf sql;
     long long max, count, exists;
@@ -468,7 +468,7 @@ static void handle_study_join(Request *req, Response *res, unsigned gid)
         res_error(res, 404, "not_found", "스터디가 없습니다.");
         return;
     }
-    if (add_member(res, gid, u.id, "member"))
+    if (study_add_member(res, gid, u.id, "member"))
         res_json(res, 201, "{\"ok\":true}");
 }
 
@@ -579,7 +579,7 @@ static void handle_study_add(Request *req, Response *res, unsigned gid)
         return;
     }
 
-    if (add_member(res, gid, uid, role))
+    if (study_add_member(res, gid, uid, role))
         res_json(res, 201, "{\"ok\":true}");
 }
 

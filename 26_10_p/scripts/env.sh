@@ -4,7 +4,7 @@
 #
 # 파일과 읽는 키:
 #   db.env    SKU_DB_HOST, SKU_DB_USER, SKU_DB_PASS   (setup-linux.sh 가 만든다)
-#   smtp.env  SKU_SMTP_*, SKU_MAIL_DEV                (smtp.env.example 을 복사해 채운다)
+#   smtp.env  SKU_SMTP_*, SKU_MAIL_DEV, SKU_SITE_URL  (smtp.env.example 을 복사해 채운다)
 #   ai.env    ANTHROPIC_API_KEY                       (선택. AI 분석·추천을 켤 때)
 #
 # smtp.env 규칙:
@@ -49,7 +49,7 @@ _smtp_kv() {
     case "$v" in *보내는계정*|*앱비밀번호*|*아이디@*) return 0 ;; esac
     [ "$k" = SKU_SMTP_PASS ] && v="${v//[[:space:]]/}"
     case "$k" in
-        SKU_SMTP_*|SKU_MAIL_DEV) export "$k=$v" ;;
+        SKU_SMTP_*|SKU_MAIL_DEV|SKU_SITE_URL) export "$k=$v" ;;
     esac
 }
 
@@ -58,7 +58,7 @@ load_env() {
     local project="$1"
 
     # 이전에 남아 있던 메일 설정부터 지운다 (파일에서 지운 설정이 환경변수에 남아 쓰이지 않게)
-    unset SKU_SMTP_URL SKU_SMTP_USER SKU_SMTP_PASS SKU_SMTP_FROM
+    unset SKU_SMTP_URL SKU_SMTP_USER SKU_SMTP_PASS SKU_SMTP_FROM SKU_SITE_URL
 
     _env_each "$project/db.env" _db_kv || true
     _env_each "$project/ai.env" _ai_kv || true

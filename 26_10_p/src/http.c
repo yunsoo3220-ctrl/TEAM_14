@@ -425,7 +425,7 @@ static int parse_request(const char *head, size_t head_len, Request *req)
     }
     url_decode(req->path);   /* 쿼리를 떼어 낸 뒤 디코딩해야 "%3F"(?)가 쿼리 구분자로 오인되지 않는다 */
 
-    /* 헤더들: 필요한 4개만 골라 저장하고 나머지는 무시한다 */
+    /* 헤더들: 필요한 것만 골라 저장하고 나머지는 무시한다 */
     while (p < end) {
         const char *nl = memchr(p, '\n', (size_t)(end - p));
         size_t len = nl ? (size_t)(nl - p) : (size_t)(end - p);
@@ -445,6 +445,8 @@ static int parse_request(const char *head, size_t head_len, Request *req)
                 header_value(line, req->content_type, sizeof req->content_type);
             else if (strncasecmp(line, "Host:", 5) == 0)
                 header_value(line, req->host, sizeof req->host);
+            else if (strncasecmp(line, "X-Forwarded-Proto:", 18) == 0)
+                header_value(line, req->fwd_proto, sizeof req->fwd_proto);
         }
         if (!nl)
             break;

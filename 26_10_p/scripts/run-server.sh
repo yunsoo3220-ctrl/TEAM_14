@@ -15,6 +15,13 @@ PROJECT="$(dirname "$SCRIPT_DIR")"
 . "$SCRIPT_DIR/env.sh"
 load_env "$PROJECT"
 
+# 메일 속 링크(참여 권유 등)에 쓸 공개 주소. smtp.env 에 SKU_SITE_URL 이 없으면
+# Tailscale Funnel 로 공개 중인 주소(https://...ts.net)를 찾아 쓴다. 못 찾으면 서버가 접속 주소로 정한다.
+if [ -z "${SKU_SITE_URL:-}" ] && command -v tailscale >/dev/null 2>&1; then
+    SKU_SITE_URL="$(timeout 5 tailscale funnel status 2>/dev/null | grep -o 'https://[A-Za-z0-9.-]*' | head -n 1 || true)"
+    [ -n "$SKU_SITE_URL" ] && export SKU_SITE_URL
+fi
+
 # 정적 파일(www/)을 상대 경로로 찾으므로 프로젝트 폴더에서 실행한다
 cd "$PROJECT"
 if [ ! -x ./server ]; then
