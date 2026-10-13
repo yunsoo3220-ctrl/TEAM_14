@@ -1,0 +1,250 @@
+{
+  "name": "sku_sdk_14",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "study-confirmed",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9e9c2329-05ea-4b54-b494-62d4c226cb7c",
+      "name": "Webhook (스터디 확정)",
+      "webhookId": "31eb5ad4-77f2-42a6-885e-7fa57bdee902",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "x50X6u4zRFTPxVoI",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 스터디 확정 요청 검증\n// - 인원: 최소 2명, 최대 4명\n// - 이메일: @skuniv.ac.kr 로 끝나야 함 (학생 전용)\nconst MIN_MEMBERS = 2;\nconst MAX_MEMBERS = 4;\nconst EMAIL_RE = /^[A-Za-z0-9._%+-]+@skuniv\\.ac\\.kr$/i;\n\nconst body = $input.first().json.body ?? {};\nconst errors = [];\n\nconst studyId = body.studyId ?? null;\nconst studyTitle = typeof body.studyTitle === 'string' ? body.studyTitle.trim() : '';\nif (!studyTitle) errors.push('studyTitle(스터디 이름)이 필요합니다.');\n\nconst rawMembers = Array.isArray(body.members) ? body.members : null;\nif (!rawMembers) errors.push('members 배열이 필요합니다.');\n\nconst members = [];\nconst seen = new Set();\n(rawMembers ?? []).forEach((m, i) => {\n  const name = typeof m?.name === 'string' ? m.name.trim() : '';\n  const email = typeof m?.email === 'string' ? m.email.trim().toLowerCase() : '';\n  if (!name) errors.push(`members[${i}]: 이름이 비어 있습니다.`);\n  if (!EMAIL_RE.test(email)) {\n    errors.push(`members[${i}]: '${email || '(빈 값)'}' 은(는) @skuniv.ac.kr 학교 메일이 아닙니다.`);\n  } else if (seen.has(email)) {\n    errors.push(`members[${i}]: '${email}' 이메일이 중복되었습니다.`);\n  }\n  seen.add(email);\n  members.push({ name, email });\n});\n\nif (rawMembers && (members.length < MIN_MEMBERS || members.length > MAX_MEMBERS)) {\n  errors.push(`스터디 인원은 ${MIN_MEMBERS}~${MAX_MEMBERS}명이어야 합니다. (현재 ${members.length}명)`);\n}\n\nreturn [{ json: { valid: errors.length === 0, errors, studyId, studyTitle, members } }];"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "입력 검증",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0ffee00-0000-4000-8000-000000000001",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "검증 통과?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: false, errors: $json.errors }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "오류 응답 (400)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        672,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 스터디원 한 명당 메일 1통: 전체 명단(이름 + 이메일)을 담아 보냄\nconst { studyId, studyTitle, members } = $input.first().json;\n\nconst esc = (s) => String(s)\n  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')\n  .replace(/\"/g, '&quot;').replace(/'/g, '&#39;');\n\nconst rows = members.map((m, i) =>\n  `<tr><td style=\"padding:6px 12px;border:1px solid #ddd;\">${i + 1}</td>` +\n  `<td style=\"padding:6px 12px;border:1px solid #ddd;\">${esc(m.name)}</td>` +\n  `<td style=\"padding:6px 12px;border:1px solid #ddd;\"><a href=\"mailto:${esc(m.email)}\">${esc(m.email)}</a></td></tr>`\n).join('');\n\nreturn members.map((me) => ({\n  json: {\n    studyId,\n    studyTitle,\n    to: me.email,\n    subject: `[SKU 스터디] '${studyTitle}' 스터디 인원이 확정되었습니다`,\n    html:\n      `<p>${esc(me.name)}님, 안녕하세요.</p>` +\n      `<p><b>${esc(studyTitle)}</b> 스터디 인원(${members.length}명)이 확정되었습니다.<br>` +\n      `아래 스터디원들에게 연락해 첫 모임 일정을 정해 보세요.</p>` +\n      `<table style=\"border-collapse:collapse;font-size:14px;\">` +\n      `<tr style=\"background:#f3f4f6;\"><th style=\"padding:6px 12px;border:1px solid #ddd;\">#</th>` +\n      `<th style=\"padding:6px 12px;border:1px solid #ddd;\">이름</th>` +\n      `<th style=\"padding:6px 12px;border:1px solid #ddd;\">이메일</th></tr>` +\n      rows + `</table>` +\n      `<p style=\"color:#888;font-size:12px;\">본 메일은 SKU 스터디 커뮤니티에서 자동 발송되었습니다.</p>`,\n  },\n}));"
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "메일 내용 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "SKU 스터디 커뮤니티"
+        }
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "Gmail 발송",
+      "webhookId": "b7e1f0a2-5c3d-4e6f-9a8b-1c2d3e4f5a6b",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        896,
+        -96
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "OVENtRMke8Fr9GwL",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $('메일 내용 만들기').all();\nreturn [{\n  json: {\n    success: true,\n    studyId: src[0]?.json.studyId ?? null,\n    studyTitle: src[0]?.json.studyTitle ?? '',\n    sentCount: $input.all().length,\n    recipients: src.map((i) => i.json.to),\n  },\n}];"
+      },
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "발송 결과 요약",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1b2c3d4-0007-4000-8000-000000000007",
+      "name": "성공 응답 (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1344,
+        -96
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook (스터디 확정)": {
+      "main": [
+        [
+          {
+            "node": "입력 검증",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "입력 검증": {
+      "main": [
+        [
+          {
+            "node": "검증 통과?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "검증 통과?": {
+      "main": [
+        [
+          {
+            "node": "메일 내용 만들기",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "오류 응답 (400)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "메일 내용 만들기": {
+      "main": [
+        [
+          {
+            "node": "Gmail 발송",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail 발송": {
+      "main": [
+        [
+          {
+            "node": "발송 결과 요약",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "발송 결과 요약": {
+      "main": [
+        [
+          {
+            "node": "성공 응답 (200)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5cd8cf2f-6a26-404d-98ab-c634130cb3f9",
+  "meta": {
+    "instanceId": "c397d3ce651168d620e97b01235ac16d7a44bbb895038c4b948ff25d0db2acb9"
+  },
+  "nodeGroups": [],
+  "id": "8PRP6Ot0QOhnwEPe",
+  "tags": []
+}
