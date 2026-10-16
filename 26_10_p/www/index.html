@@ -99,6 +99,13 @@
       <span class="label">알림함<small>Notifications</small></span>
       <span class="nav-badge" data-unread hidden></span>
     </a>
+    <a href="#/chats" data-nav="chats" id="nav-chat" hidden>
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 015.5 4h13A1.5 1.5 0 0120 5.5v9a1.5 1.5 0 01-1.5 1.5H10l-4.5 4v-4h0A1.5 1.5 0 014 14.5z"/><path d="M8 9h8M8 12.5h5"/></svg>
+      </span>
+      <span class="label">채팅방<small>Chats</small></span>
+      <span class="nav-badge" data-chat-unread hidden></span>
+    </a>
     <a href="#/me" data-nav="me" id="nav-me" hidden>
       <span class="ico" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
@@ -320,6 +327,7 @@
           <select data-f="status">
             <option value="open">모집 중</option>
             <option value="all">전체</option>
+            <option value="mine">내가 속한 팀</option>
           </select>
         </label>
         <label><span>정렬</span>
@@ -381,7 +389,13 @@
         <button class="ghost small" data-toggle></button>
         <button class="ghost small danger" data-delete>삭제</button>
       </div>
+      <div class="row owner-actions" data-team-actions hidden></div>
     </article>
+    <section class="card" data-team>
+      <div class="card-head"><h2>팀 <span data-team-count class="muted"></span></h2></div>
+      <div data-team-list class="study-members"></div>
+      <p class="muted small" data-team-hint></p>
+    </section>
     <section class="card">
       <div class="card-head"><h2>댓글 <span data-count class="muted"></span></h2></div>
       <div data-comments class="comments"></div>
@@ -1139,6 +1153,43 @@
         </fieldset>
         <div class="row"><button type="submit">게시</button></div>
       </form>
+    </section>
+  </div>
+</template>
+
+<!-- ────────────────────────────────────────────── 채팅방
+     tpl-chats: 내 채팅방 목록 (#/chats), tpl-chat: 방 하나 (#/chats/{recruit|study}/{id})
+     방 = 내가 들어간 팀원 모집 팀 · 그룹 스터디 · 멘토링. 모임에 들어가면 저절로 생긴다 -->
+<template id="tpl-chats">
+  <div class="stack">
+    <section class="card">
+      <div class="card-head">
+        <h2>채팅방 <span data-count class="muted"></span></h2>
+      </div>
+      <div data-list class="chat-rooms"></div>
+      <p class="muted small">팀원 모집 팀, 그룹 스터디, 멘토링에 들어가면 그 모임의 채팅방이 여기에 생깁니다.</p>
+    </section>
+  </div>
+</template>
+
+<template id="tpl-chat">
+  <div class="stack chat-page">
+    <a class="back" href="#/chats">← 채팅방 목록</a>
+    <section class="card chat-card">
+      <div class="chat-head">
+        <div class="chat-head-main">
+          <div class="item-top" data-tags-top></div>
+          <h2 data-title></h2>
+          <p class="muted small" data-members></p>
+        </div>
+        <a class="btn ghost small" data-go>모임 보기</a>
+      </div>
+      <div class="chat-log" data-log aria-live="polite"></div>
+      <form data-form class="chat-form">
+        <textarea name="body" rows="1" maxlength="1000" placeholder="메시지를 입력하세요" title="Enter 보내기 · Shift+Enter 줄바꿈" aria-label="메시지" required></textarea>
+        <button type="submit">보내기</button>
+      </form>
+      <p class="reason" data-reason></p>
     </section>
   </div>
 </template>

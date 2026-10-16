@@ -16,6 +16,7 @@
 #define NO_DEADLINE_DAYS    60                     /* 마감일을 모르는 학교 공지를 남겨 둘 날 수 (기본값) */
 #define SOLD_BOOK_DAYS      30                     /* 판매 완료한 전공책을 남겨 둘 날 수 */
 #define NOTIFY_KEEP_DAYS    90                     /* 알림을 남겨 둘 날 수 */
+#define TEAM_KEEP_DAYS      90                     /* 팀(팀원)이 있는 모집글을 마감 뒤에도 남겨 둘 기한 (쓴 날부터) */
 
 /* SQL 하나를 실행하고 지운(바뀐) 행 수를 돌려준다. 실패 시 -1.
  * 다른 스레드의 질의가 끼어들면 db_affected 가 그쪽 값이 되므로 둘을 함께 잠근다. */
@@ -152,6 +153,38 @@ void cleanup_ensure_schema(void)
                  "  CONSTRAINT fk_noti_actor FOREIGN KEY (actor_id) REFERENCES users (id) ON DELETE SET NULL"
                  ") ENGINE=InnoDB"))
         log_warn("알림함 표를 만들지 못했습니다. sql/18_notifications.sql 을 적용하세요.");
+
+    /* 모집글 팀 · 채팅방 (sql/20_chat.sql 과 같은 내용) */
+    if (!db_exec("CREATE TABLE IF NOT EXISTS recruit_members ("
+                 "  recruit_id INT UNSIGNED NOT NULL,"
+                 "  user_id INT UNSIGNED NOT NULL,"
+                 "  joined_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                 "  PRIMARY KEY (recruit_id, user_id),"
+                 "  KEY ix_recruit_members_user (user_id),"
+                 "  CONSTRAINT fk_rm_recruit FOREIGN KEY (recruit_id) REFERENCES recruits (id) ON DELETE CASCADE,"
+                 "  CONSTRAINT fk_rm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE"
+                 ") ENGINE=InnoDB") ||
+        !db_exec("CREATE TABLE IF NOT EXISTS chat_messages ("
+                 "  id INT UNSIGNED NOT NULL AUTO_INCREMENT,"
+                 "  room_kind ENUM('recruit','study') NOT NULL,"
+                 "  room_id INT UNSIGNED NOT NULL,"
+                 "  user_id INT UNSIGNED NOT NULL,"
+                 "  body VARCHAR(1000) NOT NULL,"
+                 "  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                 "  PRIMARY KEY (id),"
+                 "  KEY ix_chat_messages_room (room_kind, room_id, id),"
+                 "  CONSTRAINT fk_cm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE"
+                 ") ENGINE=InnoDB") ||
+        !db_exec("CREATE TABLE IF NOT EXISTS chat_reads ("
+                 "  room_kind ENUM('recruit','study') NOT NULL,"
+                 "  room_id INT UNSIGNED NOT NULL,"
+                 "  user_id INT UNSIGNED NOT NULL,"
+                 "  last_read_id INT UNSIGNED NOT NULL DEFAULT 0,"
+                 "  PRIMARY KEY (room_kind, room_id, user_id),"
+                 "  KEY ix_chat_reads_user (user_id),"
+                 "  CONSTRAINT fk_cr_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE"
+                 ") ENGINE=InnoDB"))
+        log_warn("채팅방 표를 만들지 못했습니다. sql/20_chat.sql 을 적용하세요.");
 }
 
 int cleanup_backfill_deadlines(void)
@@ -204,8 +237,13 @@ int cleanup_expired(void)
              "    AND created_at < CURDATE() - INTERVAL %lld DAY)", no_deadline_days);
     posts = exec_count(sql);
 
-    /* 팀원 모집: 마감했거나 마감일이 지났으면 */
-    recruits = exec_count("DELETE FROM recruits WHERE status = 'closed' OR deadline < CURDATE()");
+    /* 팀원 모집: 마감했거나 마감일이 지났으면.
+     * 단 팀원을 받은 글은 팀 채팅방이 걸려 있으므로 쓴 날부터 TEAM_KEEP_DAYS 일까지 남긴다 */
+    snprintf(sql, sizeof sql,
+             "DELETE FROM recruits WHERE (status = 'closed' OR deadline < CURDATE()) "
+             "AND (NOT EXISTS (SELECT 1 FROM recruit_members m WHERE m.recruit_id = recruits.id) "
+             "     OR created_at < NOW() - INTERVAL %d DAY)", TEAM_KEEP_DAYS);
+    recruits = exec_count(sql);
 
     /* 스터디: 종료일이 지났으면 */
     studies = exec_count("DELETE FROM study_groups WHERE end_date < CURDATE()");
@@ -220,6 +258,16 @@ int cleanup_expired(void)
                "WHERE i.target_kind = 'recruit' AND r.id IS NULL");
     exec_count("DELETE i FROM invitations i LEFT JOIN study_groups g ON g.id = i.target_id "
                "WHERE i.target_kind = 'study' AND g.id IS NULL");
+
+    /* 채팅방: 방(모집글·스터디)이 지워졌으면 메시지·읽음 표시도 지운다 (방이 두 종류라 외래 키를 걸 수 없다) */
+    exec_count("DELETE c FROM chat_messages c LEFT JOIN recruits r ON r.id = c.room_id "
+               "WHERE c.room_kind = 'recruit' AND r.id IS NULL");
+    exec_count("DELETE c FROM chat_messages c LEFT JOIN study_groups g ON g.id = c.room_id "
+               "WHERE c.room_kind = 'study' AND g.id IS NULL");
+    exec_count("DELETE c FROM chat_reads c LEFT JOIN recruits r ON r.id = c.room_id "
+               "WHERE c.room_kind = 'recruit' AND r.id IS NULL");
+    exec_count("DELETE c FROM chat_reads c LEFT JOIN study_groups g ON g.id = c.room_id "
+               "WHERE c.room_kind = 'study' AND g.id IS NULL");
 
     /* 알림함: 오래된 알림 */
     snprintf(sql, sizeof sql,

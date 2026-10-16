@@ -6,14 +6,20 @@
  *   GET    /api/members/matches            나와 성향이 비슷한 회원 (로그인)
  *                                           ?kind=recruit|study&id= 이면 그 모집글·스터디의 팀원 찾기 (작성자·방장)
  *   GET    /api/recruits                   모집글 목록 ?status=open|all&tag=&post_id=&sort=new|match
+ *                                           ?mine=1 이면 내가 쓰거나 팀원으로 들어간 글만 (마감한 글 포함)
  *   POST   /api/recruits                   모집글 쓰기 (로그인)
- *   GET    /api/recruits/{id}              모집글 + 댓글
+ *   GET    /api/recruits/{id}              모집글 + 댓글 + 팀원
  *   PUT    /api/recruits/{id}/status       {status:"open"|"closed"} (작성자·관리자)
  *   DELETE /api/recruits/{id}              (작성자·관리자)
  *   POST   /api/recruits/{id}/comments     (로그인)
  *   DELETE /api/recruit-comments/{id}      (작성자·관리자)
  *   POST   /api/recruits/{id}/like         마음에 들어요 (로그인, 내 글 제외) -> {liked, like_count}
  *   DELETE /api/recruits/{id}/like         취소
+ *   POST   /api/recruits/{id}/members      팀원으로 받기 {user_id} (작성자·관리자)
+ *   DELETE /api/recruits/{id}/members/{uid} 팀에서 내보내기 (작성자·관리자) / 팀 나가기 (본인)
+ *
+ * 팀 = 작성자 + 작성자가 [팀원으로 받기] 한 회원(recruit_members). 팀은 모집글의 채팅방(api_chat.c)에 들어갈 수 있다.
+ * 참여 권유를 받고 [참여하기] 를 누른 회원도 팀원이 된다 (api_invite.c).
  *
  * 마음에 들어요는 추천 모델(src/ml.c)이 관련 공모전·잘 맞는 팀원을 찾는 근거로도 쓴다.
  *
@@ -26,6 +32,7 @@
  *   recruit_tags      (모집글, 키워드) - 모집글이 찾는 키워드
  *   recruit_comments  모집글 댓글
  *   recruit_likes     (모집글, 회원) - 마음에 들어요
+ *   recruit_members   (모집글, 회원) - 팀원 (작성자는 넣지 않는다)
  */
 #include "api.h"
 #include "db.h"
@@ -39,6 +46,7 @@
 #define BIO_MAX_BYTES   1500      /* VARCHAR(500) 글자 = 한글 1500 바이트 */
 #define MATCH_LIMIT_MAX 30        /* 잘 맞는 회원 최대 표시 수 */
 #define RECRUIT_LIST_MAX 200      /* 모집글 목록 최대 개수 */
+#define TEAM_MAX        20        /* 팀원 최대 수 (작성자 제외, 모집 인원 상한과 같다) */
 
 /* ------------------------------------------------------------ 도우미 */
 
@@ -469,8 +477,9 @@ static void handle_matches(Request *req, Response *res)
 /* ------------------------------------------------------------ 모집 게시판 */
 
 /* 목록 행: id, title, status, need_people, deadline, created_at, author_id, nickname,
- *          dept, post_id, post_title, tags, comment_count, body 앞부분, like_count, 내가 눌렀는지
- * db_sqlf 의 첫 인자로 지금 회원 번호(%u, 비로그인은 0)를 준다.
+ *          dept, post_id, post_title, tags, comment_count, body 앞부분, like_count, 내가 눌렀는지,
+ *          내가 팀(작성자·팀원)인지, 팀 인원(작성자 포함)
+ * db_sqlf 의 앞 세 인자로 지금 회원 번호(%u, 비로그인은 0)를 세 번 준다.
  * (목록과 상세가 같은 열 구성을 쓰도록 매크로로 공유한다. 매크로 안의 문자열 조각들은
  *  컴파일러가 하나로 이어 붙인다. db_sqlf 로 실행하므로 날짜 형식의 % 는 %% 로 쓴다.) */
 #define RECRUIT_SELECT \
@@ -484,7 +493,10 @@ static void handle_matches(Request *req, Response *res)
     "       (SELECT COUNT(*) FROM recruit_comments rc WHERE rc.recruit_id = r.id), " \
     "       LEFT(REPLACE(REPLACE(r.body, '\\r', ''), '\\n', ' '), 120), " \
     "       (SELECT COUNT(*) FROM recruit_likes lk WHERE lk.recruit_id = r.id), " \
-    "       EXISTS (SELECT 1 FROM recruit_likes lk WHERE lk.recruit_id = r.id AND lk.user_id = %u) " \
+    "       EXISTS (SELECT 1 FROM recruit_likes lk WHERE lk.recruit_id = r.id AND lk.user_id = %u), " \
+    "       (r.author_id = %u OR EXISTS (SELECT 1 FROM recruit_members tm " \
+    "                                    WHERE tm.recruit_id = r.id AND tm.user_id = %u)), " \
+    "       1 + (SELECT COUNT(*) FROM recruit_members tm WHERE tm.recruit_id = r.id) " \
     "FROM recruits r JOIN users u ON u.id = r.author_id " \
     "LEFT JOIN departments d ON d.id = u.department_id " \
     "LEFT JOIN posts p ON p.id = r.post_id "
@@ -511,6 +523,9 @@ static void write_recruit_row(Buf *b, MYSQL_ROW row, const MlHit *match)
     json_kv_str(b, "excerpt", row[13]);                             buf_putc(b, ',');
     json_kv_int(b, "like_count", atoll(row[14]));                   buf_putc(b, ',');
     json_kv_bool(b, "liked", atoi(row[15]));                        /* EXISTS 결과 0/1 */
+    buf_putc(b, ',');
+    json_kv_bool(b, "in_team", atoi(row[16]));                      buf_putc(b, ',');
+    json_kv_int(b, "team_count", atoll(row[17]));
     if (match) {
         buf_putc(b, ',');
         json_kv_int(b, "match", match->score);
@@ -531,11 +546,11 @@ static int order_desc(const void *a, const void *b)
     return y->score != x->score ? y->score - x->score : x->idx - y->idx;
 }
 
-/* GET /api/recruits?status=open|all&tag=3&post_id=12&sort=new|match */
+/* GET /api/recruits?status=open|all&tag=3&post_id=12&sort=new|match&mine=1 */
 static void handle_recruit_list(Request *req, Response *res)
 {
     CurrentUser u;
-    char status[12], tag[12], post[12], sort[12];
+    char status[12], tag[12], post[12], sort[12], mine[4] = "";
     Buf sql, b;
     MYSQL_RES *qr;
     MYSQL_ROW rows[RECRUIT_LIST_MAX];    /* 결과 행들 */
@@ -549,10 +564,14 @@ static void handle_recruit_list(Request *req, Response *res)
     req_query(req, "tag", tag, sizeof tag);
     req_query(req, "post_id", post, sizeof post);
     req_query(req, "sort", sort, sizeof sort);
+    req_query(req, "mine", mine, sizeof mine);
 
     buf_init(&sql);
-    db_sqlf(&sql, RECRUIT_SELECT "WHERE 1 = 1", u.id);
-    if (strcmp(status, "all") != 0)          /* 기본은 모집 중인 글만 */
+    db_sqlf(&sql, RECRUIT_SELECT "WHERE 1 = 1", u.id, u.id, u.id);
+    if (mine[0] == '1' && u.id)              /* 내 팀: 내가 쓴 글 + 팀원으로 들어간 글 (마감한 글도) */
+        db_sqlf(&sql, " AND (r.author_id = %u OR EXISTS (SELECT 1 FROM recruit_members x "
+                      "WHERE x.recruit_id = r.id AND x.user_id = %u))", u.id, u.id);
+    else if (strcmp(status, "all") != 0)     /* 기본은 모집 중인 글만 */
         buf_puts(&sql, " AND r.status = 'open'");
     if (strtoul(tag, NULL, 10) > 0)          /* 특정 키워드를 찾는 모집글만 */
         db_sqlf(&sql, " AND EXISTS (SELECT 1 FROM recruit_tags x WHERE x.recruit_id = r.id "
@@ -754,7 +773,7 @@ static void handle_recruit_detail(Request *req, Response *res, unsigned rid)
     auth_current(req, &u);
 
     buf_init(&sql);
-    db_sqlf(&sql, RECRUIT_SELECT "WHERE r.id = %u", u.id, rid);   /* 첫 %u 는 매크로 안의 user_id 자리 */
+    db_sqlf(&sql, RECRUIT_SELECT "WHERE r.id = %u", u.id, u.id, u.id, rid);   /* 앞 세 %u 는 매크로 안의 user_id 자리 */
     qr = db_query_buf(&sql);
     buf_free(&sql);
     row = qr ? mysql_fetch_row(qr) : NULL;
@@ -787,6 +806,36 @@ static void handle_recruit_detail(Request *req, Response *res, unsigned rid)
     /* 수정/삭제 버튼을 보일지 */
     buf_putc(&b, ',');
     json_kv_bool(&b, "can_edit", u.id && recruit_owner_ok(rid, &u) == 1);
+
+    /* 팀: 작성자가 맨 앞, 팀원은 들어온 순서 */
+    buf_puts(&b, ",\"team\":[");
+    buf_init(&sql);
+    db_sqlf(&sql,
+            "SELECT t.user_id, u.nickname, IFNULL(d.name, ''), t.is_author, DATE_FORMAT(t.joined_at, '%%Y-%%m-%%d') "
+            "FROM (SELECT author_id AS user_id, 1 AS is_author, created_at AS joined_at FROM recruits WHERE id = %u "
+            "      UNION ALL "
+            "      SELECT user_id, 0, joined_at FROM recruit_members WHERE recruit_id = %u) t "
+            "JOIN users u ON u.id = t.user_id LEFT JOIN departments d ON d.id = u.department_id "
+            "ORDER BY t.is_author DESC, t.joined_at, t.user_id", rid, rid);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+    if (qr) {
+        while ((row = mysql_fetch_row(qr)) != NULL) {
+            if (!first)
+                buf_putc(&b, ',');
+            first = 0;
+            buf_putc(&b, '{');
+            json_kv_int(&b, "user_id", atoll(row[0]));                     buf_putc(&b, ',');
+            json_kv_str(&b, "nickname", row[1]);                           buf_putc(&b, ',');
+            json_kv_str(&b, "department", row[2][0] ? row[2] : NULL);      buf_putc(&b, ',');
+            json_kv_bool(&b, "is_author", atoi(row[3]));                   buf_putc(&b, ',');
+            json_kv_str(&b, "joined_at", row[4]);
+            buf_putc(&b, '}');
+        }
+        mysql_free_result(qr);
+    }
+    buf_putc(&b, ']');
+    first = 1;
 
     /* 댓글 (오래된 순) */
     buf_puts(&b, ",\"comments\":[");
@@ -1001,6 +1050,186 @@ static void handle_recruit_like(Request *req, Response *res, unsigned rid, int o
     buf_free(&b);
 }
 
+/* ------------------------------------------------------------ 팀 (팀원으로 받기 · 내보내기) */
+
+int recruit_team_add(unsigned rid, unsigned uid)
+{
+    Buf sql;
+    int ok;
+
+    /* 작성자는 넣지 않는다 (작성자는 언제나 팀이다). 이미 팀원이면 IGNORE 로 그냥 넘어간다 */
+    buf_init(&sql);
+    db_sqlf(&sql, "INSERT IGNORE INTO recruit_members (recruit_id, user_id) "
+                  "SELECT id, %u FROM recruits WHERE id = %u AND author_id <> %u", uid, rid, uid);
+    ok = db_exec_buf(&sql);
+    buf_free(&sql);
+    return ok;
+}
+
+/* "/api/recruits/12/members/34" 에서 두 id 를 꺼낸다. 형식이 맞으면 1. */
+static int recruit_path_two_ids(const char *path, unsigned *rid, unsigned *uid)
+{
+    static const char prefix[] = "/api/recruits/";
+    static const char mid[] = "/members/";
+    const char *p;
+    char *end;
+    unsigned long a, b;
+
+    if (strncmp(path, prefix, sizeof prefix - 1) != 0)
+        return 0;
+    p = path + sizeof prefix - 1;
+    if (*p < '0' || *p > '9')
+        return 0;
+    a = strtoul(p, &end, 10);
+    if (strncmp(end, mid, sizeof mid - 1) != 0)
+        return 0;
+    p = end + sizeof mid - 1;
+    if (*p < '0' || *p > '9')
+        return 0;
+    b = strtoul(p, &end, 10);
+    if (*end != '\0' || a == 0 || b == 0 || a > 0xFFFFFFFFul || b > 0xFFFFFFFFul)
+        return 0;
+    *rid = (unsigned)a;
+    *uid = (unsigned)b;
+    return 1;
+}
+
+/* POST /api/recruits/{id}/members {user_id} (작성자·관리자) - 댓글을 남긴 회원 등을 팀원으로 받는다.
+ * 받은 회원의 알림함에 "팀에 들어왔다" 는 알림이 가고, 누르면 팀 채팅방으로 간다. */
+static void handle_team_add(Request *req, Response *res, unsigned rid)
+{
+    CurrentUser u;
+    Json *in;
+    unsigned uid;
+    Buf sql, title, body;
+    MYSQL_RES *qr;
+    MYSQL_ROW row;
+    char rtitle[304] = "", link[48];
+    long long author, count;
+    int own, ok;
+
+    if (!auth_require(req, res, &u))
+        return;
+    own = recruit_owner_ok(rid, &u);
+    if (own < 0) { res_error(res, 404, "not_found", "모집글이 없습니다."); return; }
+    if (!own)    { res_error(res, 403, "not_allowed", "글쓴이만 팀원을 받을 수 있습니다."); return; }
+
+    in = body_object(req, res);
+    if (!in)
+        return;
+    uid = (unsigned)json_int(in, "user_id", 0);
+    json_free(in);
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT author_id, title FROM recruits WHERE id = %u", rid);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+    row = qr ? mysql_fetch_row(qr) : NULL;
+    author = row ? atoll(row[0]) : -1;
+    if (row)
+        str_copy(rtitle, sizeof rtitle, row[1]);
+    if (qr)
+        mysql_free_result(qr);
+    if (author < 0) {
+        res_error(res, 404, "not_found", "모집글이 없습니다.");
+        return;
+    }
+
+    /* 있는 학생인지 (관리자 계정은 팀원으로 넣지 않는다) */
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM users WHERE id = %u AND role = 'student'", uid);
+    ok = uid && db_scalar(sql.data, 0) > 0;
+    buf_free(&sql);
+    if (!ok) {
+        res_error(res, 400, "bad_user", "팀원으로 받을 회원이 없습니다.");
+        return;
+    }
+    if ((unsigned)author == uid) {
+        res_error(res, 400, "is_author", "글쓴이는 이미 팀입니다.");
+        return;
+    }
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM recruit_members WHERE recruit_id = %u AND user_id = %u", rid, uid);
+    ok = db_scalar(sql.data, 0) == 0;
+    buf_reset(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM recruit_members WHERE recruit_id = %u", rid);
+    count = db_scalar(sql.data, 0);
+    buf_free(&sql);
+    if (!ok) {
+        res_error(res, 409, "already_member", "이미 팀원입니다.");
+        return;
+    }
+    if (count >= TEAM_MAX) {
+        res_error(res, 409, "team_full", "팀원은 20명까지 받을 수 있습니다.");
+        return;
+    }
+    if (!recruit_team_add(rid, uid)) {
+        res_error(res, 500, "db_error", "팀원으로 받을 수 없습니다.");
+        return;
+    }
+
+    /* 받은 회원에게 알림 (누르면 팀 채팅방) */
+    snprintf(link, sizeof link, "#/chats/recruit/%u", rid);
+    buf_init(&title);
+    buf_printf(&title, "%s 님이 팀원으로 받아 주었습니다", u.nickname);
+    buf_init(&body);
+    buf_printf(&body, "'%s' 팀의 팀원이 되었습니다. 팀 채팅방에서 인사해 보세요.", rtitle);
+    notify_add(uid, u.id, "team", title.data, body.data, link);
+    buf_free(&title);
+    buf_free(&body);
+
+    log_info("팀원 받기: 모집글 %u 에 회원 %u (회원 %u 가)", rid, uid, u.id);
+    res_json(res, 201, "{\"ok\":true}");
+}
+
+/* DELETE /api/recruits/{id}/members/{uid}
+ * 작성자·관리자는 팀원을 내보낼 수 있고, 팀원은 스스로 나갈 수 있다. 작성자는 나갈 수 없다 (글을 지운다). */
+static void handle_team_remove(Request *req, Response *res, unsigned rid, unsigned uid)
+{
+    CurrentUser u;
+    Buf sql;
+    long long author;
+    unsigned long long removed;
+
+    if (!auth_require(req, res, &u))
+        return;
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT author_id FROM recruits WHERE id = %u", rid);
+    author = db_scalar(sql.data, -1);
+    buf_free(&sql);
+    if (author < 0) {
+        res_error(res, 404, "not_found", "모집글이 없습니다.");
+        return;
+    }
+    if ((unsigned)author == uid) {
+        res_error(res, 400, "author_cannot_leave", "글쓴이는 팀에서 나갈 수 없습니다. 모집글을 지우세요.");
+        return;
+    }
+    if (uid != u.id && !u.is_admin && (unsigned)author != u.id) {
+        res_error(res, 403, "not_allowed", "글쓴이만 팀원을 내보낼 수 있습니다.");
+        return;
+    }
+
+    buf_init(&sql);
+    db_sqlf(&sql, "DELETE FROM recruit_members WHERE recruit_id = %u AND user_id = %u", rid, uid);
+    db_lock();   /* db_affected 가 다른 스레드의 값이 되지 않게 */
+    if (!db_exec_buf(&sql)) {
+        db_unlock();
+        buf_free(&sql);
+        res_error(res, 500, "db_error", "팀원을 뺄 수 없습니다.");
+        return;
+    }
+    removed = db_affected();
+    db_unlock();
+    buf_free(&sql);
+    if (removed == 0) {
+        res_error(res, 404, "not_member", "이 팀의 팀원이 아닙니다.");
+        return;
+    }
+    res_json(res, 200, "{\"ok\":true}");
+}
+
 /* 커뮤니티 경로 라우터.
  * 순서 주의: "/api/recruits/{id}/status" 같은 긴 경로를 "/api/recruits/{id}" 보다 먼저 검사한다.
  * (path_id 는 suffix 가 NULL 이면 숫자로 끝나야 하므로 사실 겹치지 않지만, 읽기 쉽게 구체적인 것부터 둔다) */
@@ -1016,6 +1245,17 @@ int route_community(Request *req, Response *res)
     if (req_is(req, "GET", "/api/recruits"))          { handle_recruit_list(req, res);  return 1; }
     if (req_is(req, "POST", "/api/recruits"))         { handle_recruit_create(req, res); return 1; }
 
+    {
+        unsigned rid, uid;
+        if (!strcmp(m, "DELETE") && recruit_path_two_ids(req->path, &rid, &uid)) {
+            handle_team_remove(req, res, rid, uid);
+            return 1;
+        }
+    }
+    if (!strcmp(m, "POST") && path_id(req->path, "/api/recruits/", "/members", &id)) {
+        handle_team_add(req, res, id);
+        return 1;
+    }
     if (!strcmp(m, "PUT") && path_id(req->path, "/api/recruits/", "/status", &id)) {
         handle_recruit_status(req, res, id);
         return 1;

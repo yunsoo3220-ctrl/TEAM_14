@@ -999,6 +999,9 @@ static void handle_me(Request *req, Response *res)
         buf_putc(&b, ',');
         json_kv_int(&b, "unread_notifications", db_scalar(sql.data, 0));
         buf_free(&sql);
+        /* 사이드바 채팅방 배지 (api_chat.c) */
+        buf_putc(&b, ',');
+        json_kv_int(&b, "unread_chats", chat_unread_total(u.id));
     }
     buf_putc(&b, '}');
     res_json_buf(res, 200, &b);
@@ -1220,6 +1223,7 @@ void api_dispatch(Request *req, Response *res)
         if (route_invite(req, res))    return;
         if (route_notify(req, res))    return;
         if (route_manage(req, res))    return;
+        if (route_chat(req, res))      return;
         res_error(res, 404, "no_route", "그런 API 가 없습니다.");
         return;
     }

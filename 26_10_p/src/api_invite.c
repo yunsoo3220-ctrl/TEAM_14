@@ -5,7 +5,7 @@
  *
  * [참여하기] 는 대상에 따라 다르게 동작한다.
  *   스터디·멘토링 → 바로 멤버로 들어간다 (역할은 member, 방장이 나중에 멘토·멘티로 정할 수 있다).
- *   팀원 모집글   → 모집글에는 멤버 개념이 없으므로 "참여하고 싶다" 는 댓글을 대신 남긴다.
+ *   팀원 모집글   → 팀원(recruit_members)이 되고, 글쓴이가 볼 수 있게 "참여하고 싶다" 는 댓글도 남긴다.
  * 어느 쪽이든 권유한 사람(작성자·방장)의 알림함에 수락 알림이 가고, 같은 권유는 한 번만 수락할 수 있다.
  *
  * 흐름: 작성자/방장이 자기 글의 "팀원 찾기" 화면(GET /api/members/matches?kind=&id=)에서
@@ -79,10 +79,11 @@ int invite_member_already(const InviteTarget *t, unsigned user_id)
 
     if (user_id == t->owner_id)
         return 1;
-    if (strcmp(t->kind, "study") != 0)
-        return 0;   /* 모집글은 작성자만 빼면 된다 */
     buf_init(&sql);
-    db_sqlf(&sql, "SELECT COUNT(*) FROM study_members WHERE group_id = %u AND user_id = %u", t->id, user_id);
+    if (strcmp(t->kind, "study") == 0)
+        db_sqlf(&sql, "SELECT COUNT(*) FROM study_members WHERE group_id = %u AND user_id = %u", t->id, user_id);
+    else
+        db_sqlf(&sql, "SELECT COUNT(*) FROM recruit_members WHERE recruit_id = %u AND user_id = %u", t->id, user_id);
     n = db_scalar(sql.data, 0);
     buf_free(&sql);
     return n > 0;
@@ -385,10 +386,10 @@ static void handle_accept(Request *req, Response *res, unsigned nid)
         buf_init(&sql);
         db_sqlf(&sql, "INSERT INTO recruit_comments (recruit_id, author_id, body) VALUES (%u, %u, %Q)",
                 t.id, u.id, "✋ 참여 권유를 받고 함께하고 싶어 참여합니다! 연락 방법을 알려 주세요.");
-        ok = db_exec_buf(&sql);
+        ok = db_exec_buf(&sql) && recruit_team_add(t.id, u.id);
         buf_free(&sql);
         if (!ok)
-            res_error(res, 500, "db_error", "참여 댓글을 남길 수 없습니다.");
+            res_error(res, 500, "db_error", "팀에 들어갈 수 없습니다.");
     }
     if (!ok) {   /* 응답은 위에서 채웠다 (예: 정원이 참). 다시 누를 수 있게 되돌린다 */
         buf_init(&sql);
@@ -409,7 +410,7 @@ static void handle_accept(Request *req, Response *res, unsigned nid)
     buf_printf(&title, "%s 님이 %s 참여 권유를 수락했습니다", u.nickname, target_label(&t));
     buf_init(&body);
     buf_printf(&body, strcmp(t.kind, "study") == 0 ? "'%s' 의 멤버가 되었습니다. 역할(멘토·멘티)을 정해 보세요."
-                                                   : "'%s' 에 참여 댓글을 남겼습니다. 연락해 보세요.", t.title);
+                                                   : "'%s' 의 팀원이 되었습니다. 팀 채팅방에서 인사해 보세요.", t.title);
     notify_add(t.owner_id, u.id, "invite_accepted", title.data, body.data, link);
     buf_free(&title);
     buf_free(&body);

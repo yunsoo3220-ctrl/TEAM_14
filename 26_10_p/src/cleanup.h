@@ -4,10 +4,12 @@
  *   posts         마감일(deadline)이 지난 공모전.
  *                 마감일을 모르는 학교 공지(작성자 없음)는 게시일로부터 cleanup.no_deadline_days 일(기본 60일) 뒤.
  *                 댓글·대상 학과·AI 분석은 함께 지워지고(ON DELETE CASCADE), 연결된 팀원 모집글은 남는다.
- *   recruits      마감(closed)했거나 마감일이 지난 팀원 모집글 (댓글·태그·좋아요도 함께)
+ *   recruits      마감(closed)했거나 마감일이 지난 팀원 모집글 (댓글·태그·좋아요·팀원도 함께).
+ *                 팀원을 받은 글은 팀 채팅방을 위해 쓴 날부터 90일까지 남긴다.
  *   study_groups  종료일(end_date)이 지난 스터디 (멤버 목록도 함께)
  *   books         판매 완료(sold)한 지 30일이 지난 전공책 (사진·댓글도 함께)
  *   invitations   대상 모집글·스터디가 지워진 참여 권유 기록
+ *   chat_messages 방(모집글·스터디)이 지워진 채팅 메시지와 읽음 표시(chat_reads)
  *   notifications 90일이 지난 알림
  *   notices       수집 기간보다 오래된 공지 기록 (게시물이 없는 것만)
  *

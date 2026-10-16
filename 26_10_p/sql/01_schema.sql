@@ -395,6 +395,44 @@ CREATE TABLE notifications (
 ) ENGINE=InnoDB;
 
 
+-- 모집글 팀: 작성자가 [팀원으로 받기] 한 회원 (작성자 자신은 넣지 않는다). 팀 채팅방에 들어갈 수 있다
+CREATE TABLE recruit_members (
+  recruit_id INT UNSIGNED NOT NULL,
+  user_id    INT UNSIGNED NOT NULL,
+  joined_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (recruit_id, user_id),                 -- 한 팀에 한 번만
+  KEY ix_recruit_members_user (user_id),
+  CONSTRAINT fk_rm_recruit FOREIGN KEY (recruit_id) REFERENCES recruits (id) ON DELETE CASCADE,
+  CONSTRAINT fk_rm_user    FOREIGN KEY (user_id)    REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 채팅방 메시지: 방 = 모집글 팀(recruit) 또는 스터디·멘토링(study). 방이 지워지면 자동 정리(cleanup.c)가 지운다
+CREATE TABLE chat_messages (
+  id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  room_kind  ENUM('recruit','study') NOT NULL,         -- recruit = 모집글 팀, study = 그룹 스터디·멘토링
+  room_id    INT UNSIGNED  NOT NULL,                   -- recruits.id 또는 study_groups.id
+  user_id    INT UNSIGNED  NOT NULL,                   -- 쓴 회원
+  body       VARCHAR(1000) NOT NULL,
+  created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_chat_messages_room (room_kind, room_id, id),
+  CONSTRAINT fk_cm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 채팅방 읽음 표시: (방, 회원) 이 마지막으로 읽은 메시지 id (안 읽은 수 = 이보다 큰 남의 메시지 수)
+CREATE TABLE chat_reads (
+  room_kind    ENUM('recruit','study') NOT NULL,
+  room_id      INT UNSIGNED NOT NULL,
+  user_id      INT UNSIGNED NOT NULL,
+  last_read_id INT UNSIGNED NOT NULL DEFAULT 0,       -- 이 id 까지 읽었다
+  PRIMARY KEY (room_kind, room_id, user_id),
+  KEY ix_chat_reads_user (user_id),
+  CONSTRAINT fk_cr_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
 -- 마지막 수집 시각 등 서버 설정값
 -- 키-값(k-v) 형태라 설정이 늘어도 표 구조를 바꿀 필요가 없다.
 --   crawl.window_days : 공지 수집 기간(일), crawl.fetched_at : 마지막 수집 시각

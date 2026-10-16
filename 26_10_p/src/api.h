@@ -12,6 +12,7 @@
  *   api_invite.c    : 참여 권유 (모집글·스터디·멘토링에 회원을 메일로 초대)
  *   api_notify.c    : 알림함 (참여 권유 등 회원에게 온 알림)
  *   api_manage.c    : 관리자 회원 관리·알림 보내기·전체 게시물
+ *   api_chat.c      : 채팅방 (모집글 팀·스터디·멘토링 멤버끼리 대화)
  * 이 헤더는 그 파일들이 서로 공유해야 하는 타입과 함수만 모아 둔 것이다.
  */
 #ifndef SKU_API_H
@@ -74,6 +75,7 @@ int  route_books(Request *req, Response *res);      /* 전공책 장터·책 사
 int  route_invite(Request *req, Response *res);     /* 참여 권유 메일                      (api_invite.c) */
 int  route_notify(Request *req, Response *res);     /* 알림함                              (api_notify.c) */
 int  route_manage(Request *req, Response *res);     /* 관리자 회원 관리·알림·전체 게시물   (api_manage.c) */
+int  route_chat(Request *req, Response *res);       /* 채팅방 목록·메시지                  (api_chat.c) */
 
 /* 관심 키워드 이름과 자기소개를 이어 붙인 글 (추천 개인화용). 내용이 있으면 1.
  * 추천 엔진은 이 글을 "사용자를 설명하는 문장" 으로 보고 게시물과 비교한다. */
@@ -94,10 +96,16 @@ typedef struct {
 } InviteTarget;
 /* kind·id 로 대상을 찾아 t 를 채운다. 있으면 1. */
 int  invite_target(const char *kind, unsigned id, InviteTarget *t);
-/* user_id 가 이미 함께하는 사람(작성자·방장·스터디 멤버)이면 1 */
+/* user_id 가 이미 함께하는 사람(작성자·방장·스터디 멤버·모집글 팀원)이면 1 */
 int  invite_member_already(const InviteTarget *t, unsigned user_id);
 /* 이 대상에서 user_id 에게 이미 권유를 보냈으면 1 */
 int  invite_sent(const InviteTarget *t, unsigned user_id);
+
+/* rid 모집글 팀에 uid 회원을 넣는다 (작성자·이미 팀원이면 아무 일도 하지 않고 성공). 성공 1. api_community.c */
+int  recruit_team_add(unsigned rid, unsigned uid);
+
+/* user_id 의 채팅방 전체에서 안 읽은 메시지 수 (사이드바 배지). api_chat.c */
+long long chat_unread_total(unsigned user_id);
 
 /* gid 스터디에 uid 회원을 role 로 넣는다 (정원 검사 포함). 성공 1, 실패하면 응답을 채우고 0. api_study.c */
 int  study_add_member(Response *res, unsigned gid, unsigned uid, const char *role);
