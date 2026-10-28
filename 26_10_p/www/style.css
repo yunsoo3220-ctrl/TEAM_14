@@ -1294,7 +1294,7 @@ button.danger { color: var(--danger); }
 .tag.mentee { background: var(--k-hack-soft);  color: var(--k-hack); }
 .tag.owner  { background: var(--brand-soft);   color: var(--brand-dark); }
 
-/* 멘토링 만들기: 내 역할 고르기 (멘토 / 멘티 두 칸 버튼) */
+/* 칸 버튼으로 하나 고르기 (전공책 상태 등) */
 .role-pick {
   display: inline-flex;
   padding: 3px;

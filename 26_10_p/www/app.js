@@ -1968,19 +1968,16 @@ async function viewRecruit(id) {
 
 const ROLE_LABEL = { mentor: '멘토', mentee: '멘티', member: '멤버' };
 
-/* 그룹 스터디와 멘토링은 같은 화면·같은 API 를 쓰고 글자·주소만 다르다 (서버에서는 kind 로 구분).
- *   path: 주소(#/{path}), tpl/list: 상세·목록 템플릿 이름, title: 메뉴 이름, n: 이름, eul/ga: 조사 붙은 이름 */
-const STUDY_KIND = {
-  study:     { path: 'studies',   tpl: 'study',     list: 'studies',    title: '그룹 스터디', n: '스터디', eul: '스터디를', ga: '스터디가' },
-  mentoring: { path: 'mentoring', tpl: 'mentoring', list: 'mentorings', title: '멘토링',     n: '멘토링', eul: '멘토링을', ga: '멘토링이' },
-};
-const kindOf = s => STUDY_KIND[s.kind] || STUDY_KIND.study;
+/* 그룹 스터디 화면의 글자·주소
+ *   path: 주소(#/{path}), tpl/list: 상세·목록 템플릿 이름, title: 메뉴 이름, n: 이름, eul/ga: 조사 붙은 이름
+ * (예전의 멘토링 메뉴는 없앴다. 스터디에서 멘토·멘티를 정할 수 있다) */
+const STUDY = { path: 'studies', tpl: 'study', list: 'studies', title: '그룹 스터디', n: '스터디', eul: '스터디를', ga: '스터디가' };
 
 /* 스터디 목록 카드 */
 function studyCard(s) {
   const full = s.member_count >= s.max_members;
   const a = el('a', 'recruit-card' + (full && !s.my_role ? ' closed' : ''));
-  a.href = `#/${kindOf(s).path}/${s.id}`;
+  a.href = `#/${STUDY.path}/${s.id}`;
 
   const tags = el('div', 'item-top');
   tags.append(el('span', full ? 'tag plain' : 'tag ok', `${s.member_count} / ${s.max_members}명`));
@@ -2001,13 +1998,12 @@ function studyCard(s) {
   return a;
 }
 
-/* #/studies, #/mentoring - 스터디·멘토링 목록 (전체 / 내가 속한 것) */
-async function viewStudies(kind = 'study') {
-  const K = STUDY_KIND[kind];
-  markNav(K.path);
-  setPageTitle(K.title);
+/* #/studies - 스터디 목록 (전체 / 내가 속한 것) */
+async function viewStudies() {
+  markNav(STUDY.path);
+  setPageTitle(STUDY.title);
 
-  const node = tpl(`tpl-${K.list}`);
+  const node = tpl(`tpl-${STUDY.list}`);
   const root = node.firstElementChild;
   const listEl = root.querySelector('[data-list]');
   const countEl = root.querySelector('[data-count]');
@@ -2020,12 +2016,12 @@ async function viewStudies(kind = 'study') {
   async function reload() {
     listEl.replaceChildren(...skeleton(4, 'sk-reco'));
     try {
-      const r = await api(`/api/studies?kind=${kind}${mineSel.value ? '&mine=1' : ''}`);
+      const r = await api(`/api/studies${mineSel.value ? '?mine=1' : ''}`);
       countEl.textContent = `(${r.studies.length})`;
       listEl.replaceChildren(...(r.studies.length
         ? r.studies.map(studyCard)
-        : [el('p', 'empty', mineSel.value ? `아직 참여한 ${K.ga} 없습니다.`
-                                          : `아직 ${K.ga} 없습니다. 첫 ${K.eul} 만들어 보세요.`)]));
+        : [el('p', 'empty', mineSel.value ? `아직 참여한 ${STUDY.ga} 없습니다.`
+                                          : `아직 ${STUDY.ga} 없습니다. 첫 ${STUDY.eul} 만들어 보세요.`)]));
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
@@ -2035,14 +2031,13 @@ async function viewStudies(kind = 'study') {
   reload();
 }
 
-/* #/studies/new, #/mentoring/new - 스터디·멘토링 만들기 */
-function viewStudyNew(kind = 'study') {
-  const K = STUDY_KIND[kind];
-  markNav(K.path);
-  setPageTitle(`${K.n} 만들기`);
-  if (!state.me) return requireLogin(`${K.eul} 만들려면 로그인하세요.`);
+/* #/studies/new - 스터디 만들기 */
+function viewStudyNew() {
+  markNav(STUDY.path);
+  setPageTitle(`${STUDY.n} 만들기`);
+  if (!state.me) return requireLogin(`${STUDY.eul} 만들려면 로그인하세요.`);
 
-  const node = tpl(`tpl-${K.tpl}-new`);
+  const node = tpl(`tpl-${STUDY.tpl}-new`);
   const form = node.querySelector('[data-form]');
   const now = new Date();   /* 종료일은 오늘부터 고를 수 있다 (지난 날짜면 바로 지워지므로) */
   form.elements.end_date.min = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -2057,10 +2052,10 @@ function viewStudyNew(kind = 'study') {
       const out = await api('/api/studies', {
         method: 'POST',
         body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6),
-                               end_date: v.end_date || null, kind, role: v.role }),
+                               end_date: v.end_date || null, role: v.role }),
       });
-      toast(`${K.eul} 만들었습니다. 멤버를 추가해 보세요.`);
-      location.hash = `#/${K.path}/${out.id}`;
+      toast(`${STUDY.eul} 만들었습니다. 멤버를 추가해 보세요.`);
+      location.hash = `#/${STUDY.path}/${out.id}`;
     } catch (e) {
       toast(e.message);
       btn.disabled = false;
@@ -2098,7 +2093,7 @@ function studyMemberRow(m, study, canManage, reload) {
     if (!m.is_owner) {
       const out = el('button', 'ghost small danger', '내보내기');
       out.onclick = async () => {
-        if (!(await askConfirm(`${m.nickname} 님을 ${kindOf(study).n}에서 내보낼까요?`))) return;
+        if (!(await askConfirm(`${m.nickname} 님을 ${STUDY.n}에서 내보낼까요?`))) return;
         try {
           await api(`/api/studies/${study.id}/members/${m.user_id}`, { method: 'DELETE' });
           reload();
@@ -2113,21 +2108,18 @@ function studyMemberRow(m, study, canManage, reload) {
   return row;
 }
 
-/* #/studies/{id}, #/mentoring/{id} - 상세: 멤버(멘토·멘티·멤버 묶음), 참여/나가기, 방장의 멤버 추가 */
-async function viewStudy(id, kind = 'study') {
-  markNav(STUDY_KIND[kind].path);
-  setPageTitle(STUDY_KIND[kind].title);
+/* #/studies/{id} - 상세: 멤버(멘토·멘티·멤버 묶음), 참여/나가기, 방장의 멤버 추가 */
+async function viewStudy(id) {
+  markNav(STUDY.path);
+  setPageTitle(STUDY.title);
 
   let data;
   try { data = await api(`/api/studies/${id}`); }
   catch (e) { return renderMessage(e.message); }
 
   const { study: s, description, members, can_manage } = data;
-  const K = kindOf(s);   /* 주소가 아니라 서버가 알려 준 구분을 따른다 */
-  markNav(K.path);
-  setPageTitle(K.title);
-  const reload = () => viewStudy(id, s.kind);
-  const node = tpl(`tpl-${K.tpl}`);
+  const reload = () => viewStudy(id);
+  const node = tpl(`tpl-${STUDY.tpl}`);
   const root = node.firstElementChild;
   const full = s.member_count >= s.max_members;
 
@@ -2160,18 +2152,18 @@ async function viewStudy(id, kind = 'study') {
     join.onclick = async () => {
       try {
         await api(`/api/studies/${id}/join`, { method: 'POST' });
-        toast(`${K.n}에 참여했습니다.`);
+        toast(`${STUDY.n}에 참여했습니다.`);
         reload();
       } catch (e) { toast(e.message); }
     };
     actions.append(join);
   } else if (s.my_role && !isOwner) {
-    const leave = el('button', 'ghost small', `${K.n} 나가기`);
+    const leave = el('button', 'ghost small', `${STUDY.n} 나가기`);
     leave.onclick = async () => {
-      if (!(await askConfirm(`이 ${K.n}에서 나갈까요?`))) return;
+      if (!(await askConfirm(`이 ${STUDY.n}에서 나갈까요?`))) return;
       try {
         await api(`/api/studies/${id}/members/${state.me.id}`, { method: 'DELETE' });
-        toast(`${K.n}에서 나왔습니다.`);
+        toast(`${STUDY.n}에서 나왔습니다.`);
         reload();
       } catch (e) { toast(e.message); }
     };
@@ -2183,13 +2175,13 @@ async function viewStudy(id, kind = 'study') {
     actions.append(find);
   }
   if (can_manage) {
-    const del = el('button', 'ghost small danger', `${K.n} 삭제`);
+    const del = el('button', 'ghost small danger', `${STUDY.n} 삭제`);
     del.onclick = async () => {
-      if (!(await askConfirm(`이 ${K.eul} 지울까요? 멤버 목록도 함께 지워집니다.`))) return;
+      if (!(await askConfirm(`이 ${STUDY.eul} 지울까요? 멤버 목록도 함께 지워집니다.`))) return;
       try {
         await api(`/api/studies/${id}`, { method: 'DELETE' });
         toast('지웠습니다.');
-        location.hash = `#/${K.path}`;
+        location.hash = `#/${STUDY.path}`;
       } catch (e) { toast(e.message); }
     };
     actions.append(del);
@@ -2339,7 +2331,7 @@ async function viewAdminUsers() {
     if (u.suspended_until) name.append(el('span', 'tag suspended', `정지 중 · ${u.suspended_until} 까지`));
     who.append(name,
       el('span', null, [`${u.name} · ${u.student_no}`, u.department, u.email].filter(Boolean).join(' · ')),
-      el('span', null, `가입 ${u.created_at} · 모집글 ${u.recruits} · 스터디·멘토링 ${u.studies} · 전공책 ${u.books}`));
+      el('span', null, `가입 ${u.created_at} · 모집글 ${u.recruits} · 스터디 ${u.studies} · 전공책 ${u.books}`));
     if (u.suspended_until) who.append(el('span', null, `정지 사유: ${u.suspend_reason || '-'}`));
     const tools = el('div', 'admin-tools');
     if (u.id !== state.me.id) {
@@ -2367,7 +2359,7 @@ async function viewAdminUsers() {
       const del = el('button', 'ghost small danger', '삭제');
       del.onclick = async () => {
         if (!(await askConfirm(`${u.nickname} (${u.name}, ${u.student_no}) 회원을 지울까요?\n` +
-                     '이 회원의 모집글·스터디·멘토링·전공책·댓글·알림이 모두 함께 지워지며 되돌릴 수 없습니다.'))) return;
+                     '이 회원의 모집글·스터디·전공책·댓글·알림이 모두 함께 지워지며 되돌릴 수 없습니다.'))) return;
         try {
           await api(`/api/admin/users/${u.id}`, { method: 'DELETE' });
           toast('회원을 지웠습니다.');
@@ -2467,7 +2459,6 @@ async function viewAdminUsers() {
 const CONTENT_KIND = {
   recruit:   { label: '팀원 모집',   path: 'recruits',  owner: '작성자', cls: 'kind-contest' },
   study:     { label: '그룹 스터디', path: 'studies',   owner: '방장',   cls: 'kind-hackathon' },
-  mentoring: { label: '멘토링',      path: 'mentoring', owner: '방장',   cls: 'mentor' },
   book:      { label: '전공책',      path: 'books',     owner: '판매자', cls: 'kind-etc' },
 };
 const contentStatus = it => it.type === 'recruit' ? (it.status === 'open' ? '모집 중' : '마감')
@@ -2504,7 +2495,7 @@ async function viewAdminContent() {
     tags.append(el('span', `tag ${K.cls}`, K.label), el('span', 'tag plain', contentStatus(it)));
     who.append(tags, title,
       el('span', null, `${K.owner} ${it.owner_nickname} (${it.owner_student_no}) · ${it.created_at} · ` +
-                       (it.type === 'study' || it.type === 'mentoring' ? `멤버 ${it.count}명` : `댓글 ${it.count}개`)));
+                       (it.type === 'study' ? `멤버 ${it.count}명` : `댓글 ${it.count}개`)));
     const tools = el('div', 'admin-tools');
     const notify = el('button', 'ghost small', `📢 ${K.owner}에게 알림`);
     notify.onclick = () => adminNotifyForm(r, { id: it.owner_id, nickname: it.owner_nickname },
@@ -2581,7 +2572,7 @@ async function viewNotifications() {
     const tools = el('div', 'noti-tools');
 
     /* 참여 권유: [참여하기] 를 누르면 바로 참여한다
-     * (스터디·멘토링은 멤버로 가입, 팀원 모집글은 팀원이 되고 참여 댓글을 남김 - 서버 api_invite.c) */
+     * (스터디는 멤버로 가입, 팀원 모집글은 팀원이 되고 참여 댓글을 남김 - 서버 api_invite.c) */
     if (n.kind === 'invite' && n.invite_state) {
       const join = el('button', 'small', INVITE_BTN[n.invite_state] || '참여하기');
       join.type = 'button';
@@ -3099,10 +3090,9 @@ function personCard(m, target) {
 const INVITE_KIND = {
   recruit:   { label: '팀원 모집',   path: 'recruits',  nav: 'recruits' },
   study:     { label: '그룹 스터디', path: 'studies',   nav: 'studies' },
-  mentoring: { label: '멘토링',      path: 'mentoring', nav: 'mentoring' },
 };
 
-/* #/people/{recruit|study}/{id} - 내 모집글·스터디·멘토링에 맞는 회원 찾기 + 참여 권유 (글쓴이·방장) */
+/* #/people/{recruit|study}/{id} - 내 모집글·스터디에 맞는 회원 찾기 + 참여 권유 (글쓴이·방장) */
 async function viewPeople(kind, id) {
   markNav(kind === 'recruit' ? 'recruits' : 'studies');
   setPageTitle('팀원 찾기');
@@ -3208,7 +3198,6 @@ async function viewAi() {
 const CHAT_KIND = {
   recruit:   { label: '팀원 모집', icon: '🤝' },
   study:     { label: '그룹 스터디', icon: '📚' },
-  mentoring: { label: '멘토링', icon: '🎓' },
 };
 const CHAT_POLL_MS = 3000;   /* 방을 보는 동안 새 메시지를 묻는 간격 */
 let chatTimer = null;        /* 방 화면의 새 메시지 확인 타이머 (route() 가 화면을 바꿀 때 멈춘다) */
@@ -3261,7 +3250,7 @@ async function viewChats() {
       const empty = el('div', 'empty');
       empty.append(el('p', null, '아직 들어간 모임이 없습니다.'));
       const links = el('div', 'row chat-empty-links');
-      for (const [href, text] of [['#/recruits', '팀원 모집 보기'], ['#/studies', '그룹 스터디 보기'], ['#/mentoring', '멘토링 보기']]) {
+      for (const [href, text] of [['#/recruits', '팀원 모집 보기'], ['#/studies', '그룹 스터디 보기']]) {
         const a = el('a', 'btn ghost small', text);
         a.href = href;
         links.append(a);
@@ -3526,9 +3515,8 @@ function route() {
   if (parts[0] === 'studies' && parts[1] === 'new') return viewStudyNew();
   if (parts[0] === 'studies' && parts[1]) return viewStudy(Number(parts[1]));
   if (parts[0] === 'studies') return viewStudies();
-  if (parts[0] === 'mentoring' && parts[1] === 'new') return viewStudyNew('mentoring');
-  if (parts[0] === 'mentoring' && parts[1]) return viewStudy(Number(parts[1]), 'mentoring');
-  if (parts[0] === 'mentoring') return viewStudies('mentoring');
+  /* 예전 멘토링 주소 (알림·메일 링크): 멘토링은 그룹 스터디로 옮겼다 */
+  if (parts[0] === 'mentoring') { location.hash = parts[1] && parts[1] !== 'new' ? `#/studies/${parts[1]}` : '#/studies'; return; }
   if (parts[0] === 'books' && parts[1] === 'new') return viewBookNew();
   if (parts[0] === 'books' && parts[1]) return viewBook(Number(parts[1]));
   if (parts[0] === 'books') return viewBooks();

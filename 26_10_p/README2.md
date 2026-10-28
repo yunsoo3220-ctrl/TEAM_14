@@ -101,7 +101,7 @@ mysql -u root -p --default-character-set=utf8mb4 < sql/02_seed_departments.sql
   변경분 (다시 돌려도 된다). `01` 을 처음부터 돌렸다면 필요 없다.
 - `13_add_departments.sql` — 이공대학에 컴퓨터공학과·전자공학과를 기존 DB 에 더하는 변경분
   (다시 돌려도 된다). 적용한 뒤 `05_dept_profiles.sql` 을 다시 돌린다. `02` 를 처음부터 돌렸다면 필요 없다.
-- `15_mentoring.sql` — 멘토링 구분 열(`study_groups.kind`)을 기존 DB 에 더하는 변경분.
+- `15_mentoring.sql` — 멘토링 구분 열(`study_groups.kind`)을 기존 DB 에 더하는 변경분 (멘토링 메뉴는 없앴고, 열만 남아 늘 `study`).
   서버가 시작할 때 열이 없으면 스스로 추가하므로 보통은 필요 없다.
 
 ### 시연용 가상 회원
@@ -285,11 +285,11 @@ ml\.venv\Scripts\python.exe ml\finetune.py               # 미세조정 → 임�
 - 기존 DB 에는 `sql/12_study_groups.sql` 을 한 번 적용한다.
 - 자세한 내용(API 응답 예, 설계, 바뀐 파일, 시험 목록)은 [STUDY_GROUPS.md](STUDY_GROUPS.md) 에 있다.
 
-### 멘토링
+### 멘토링 (없앰)
 
-- 사이드바의 **멘토링** (`#/mentoring`) 은 그룹 스터디와 같은 화면·같은 기능(만들기, 참여, 멤버 추가, 멘토·멘티)이고 글자만 다르다.
-- 멘토링을 만들 때 [만들기] 옆의 **멘토 / 멘티** 버튼으로 내 역할을 고른다 (기본 멘토). `POST /api/studies` 의 `role` 로 보내고, 그룹 스터디는 보내지 않아 멤버로 들어간다.
-- 같은 표(`study_groups`)와 같은 API(`/api/studies`)를 쓰고 `kind` 열(`study` / `mentoring`)로 구분한다. 목록은 `GET /api/studies?kind=mentoring`.
+- 예전의 **멘토링** 메뉴는 없앴다. 그룹 스터디에서 방장이 멘토·멘티를 정할 수 있어 기능이 겹쳤기 때문이다.
+- 남아 있던 멘토링은 서버가 시작할 때 멤버·역할·채팅을 그대로 둔 채 그룹 스터디로 옮긴다 (`cleanup_ensure_schema`).
+- 예전 알림·메일의 `#/mentoring/{id}` 주소는 `#/studies/{id}` 로 넘어간다. `study_groups.kind` 열은 예전 DB 와 맞추려고 남겨 두었고 늘 `study` 다.
 
 ### AI 분석·추천 켜기 (Claude, 유료·선택)
 

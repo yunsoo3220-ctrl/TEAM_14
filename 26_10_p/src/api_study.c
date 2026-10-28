@@ -1,7 +1,7 @@
 /* 그룹 스터디
  *
- *   GET    /api/studies                        스터디 목록 ?mine=1 이면 내가 속한 것만, ?kind=mentoring 이면 멘토링
- *   POST   /api/studies                        스터디 만들기 {name, description?, max_members?, end_date?, kind?, role?} (로그인)
+ *   GET    /api/studies                        스터디 목록 ?mine=1 이면 내가 속한 것만
+ *   POST   /api/studies                        스터디 만들기 {name, description?, max_members?, end_date?, role?} (로그인)
  *   GET    /api/studies/{id}                   스터디 + 멤버
  *   DELETE /api/studies/{id}                   스터디 삭제 (방장·관리자)
  *   POST   /api/studies/{id}/join              참여하기 (로그인, 정원 안에서)
@@ -14,7 +14,8 @@
  * 멘토·멘티는 선택이다. 역할을 정하지 않은 멤버는 member 로 남는다.
  * 다른 회원에게 보이는 것은 표시 이름·학과뿐이다 (api_community.c 와 같은 원칙).
  * 종료일(end_date)을 정한 스터디는 그날이 지나면 자동으로 지워진다 (cleanup.c).
- * 멘토링도 같은 표·같은 API 를 쓰고 kind 로만 구분한다 ('study' = 그룹 스터디, 'mentoring' = 멘토링).
+ * 예전의 멘토링 메뉴는 없앴다 (스터디에서 멘토·멘티를 정할 수 있으므로). 남아 있던 멘토링은 서버가 시작할 때
+ * 그룹 스터디로 옮긴다 (cleanup.c). study_groups.kind 열은 예전 DB 와 맞추려고 남겨 두었고 늘 'study' 다.
  *
  * 관련 테이블:
  *   study_groups   스터디 (owner_id = 방장)
@@ -28,7 +29,6 @@
 #include <string.h>
 
 #define STUDY_MAX_MEMBERS 50     /* 정원 상한 */
-#define MENTORING_MAX_MEMBERS 4  /* 멘토링 정원 상한 */
 #define STUDY_LIST_MAX    200    /* 목록 최대 개수 */
 #define CANDIDATE_MAX     10     /* 멤버 검색 결과 최대 수 */
 
@@ -61,13 +61,6 @@ static const char *role_code(const char *s)
     if (!strcmp(s, "mentor"))     return "mentor";
     if (!strcmp(s, "mentee"))     return "mentee";
     return NULL;
-}
-
-/* 구분 이름을 코드 상수로 바꾼다. 모르는 값이나 없으면 그룹 스터디. */
-static const char *kind_code(const char *s)
-{
-    if (s && !strcmp(s, "mentoring")) return "mentoring";
-    return "study";
 }
 
 /* "/api/studies/12/members/34" 에서 두 id 를 꺼낸다. 형식이 맞으면 1. */
@@ -124,7 +117,7 @@ static int study_manage_ok(unsigned gid, const CurrentUser *u)
 /* ------------------------------------------------------------ 목록 */
 
 /* 목록 행: id, name, description 앞부분, max_members, created_at, owner_id, 방장 표시 이름,
- *          멤버 수, 멘토 수, 멘티 수, 내 역할('' = 멤버 아님), 종료일('' = 없음), 구분(study/mentoring)
+ *          멤버 수, 멘토 수, 멘티 수, 내 역할('' = 멤버 아님), 종료일('' = 없음), 구분(늘 study)
  * db_sqlf 의 첫 인자로 지금 회원 번호(%u, 비로그인은 0)를 준다. */
 #define STUDY_SELECT \
     "SELECT g.id, g.name, LEFT(REPLACE(REPLACE(g.description, '\\r', ''), '\\n', ' '), 120), " \
@@ -158,11 +151,11 @@ static void write_study_row(Buf *b, MYSQL_ROW row)
     buf_putc(b, '}');
 }
 
-/* GET /api/studies?mine=1&kind=mentoring */
+/* GET /api/studies?mine=1 */
 static void handle_study_list(Request *req, Response *res)
 {
     CurrentUser u;
-    char mine[4] = "", kind[16] = "";
+    char mine[4] = "";
     Buf sql, b;
     MYSQL_RES *qr;
     MYSQL_ROW row;
@@ -170,10 +163,9 @@ static void handle_study_list(Request *req, Response *res)
 
     auth_current(req, &u);
     req_query(req, "mine", mine, sizeof mine);
-    req_query(req, "kind", kind, sizeof kind);
 
     buf_init(&sql);
-    db_sqlf(&sql, STUDY_SELECT "WHERE g.kind = %Q ", u.id, kind_code(kind));
+    db_sqlf(&sql, STUDY_SELECT "WHERE 1 = 1 ", u.id);
     if (mine[0] == '1' && u.id)
         db_sqlf(&sql, "AND EXISTS (SELECT 1 FROM study_members x WHERE x.group_id = g.id AND x.user_id = %u) ",
                 u.id);
@@ -201,14 +193,14 @@ static void handle_study_list(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 만들기 · 상세 · 삭제 */
 
-/* POST /api/studies {name, description?, max_members?, end_date?, kind?, role?} - 만든 사람이 방장이자 첫 멤버가 된다.
- * role 은 방장 자신의 역할 (멘토링 만들기에서 멘토/멘티를 고른다). 없거나 모르는 값이면 member. */
+/* POST /api/studies {name, description?, max_members?, end_date?, role?} - 만든 사람이 방장이자 첫 멤버가 된다.
+ * role 은 방장 자신의 역할 (member/mentor/mentee). 없거나 모르는 값이면 member. */
 static void handle_study_create(Request *req, Response *res)
 {
     CurrentUser u;
     Json *in;
     char *name = NULL, *desc = NULL;
-    const char *end_date, *kind, *role;
+    const char *end_date, *role;
     int max;
     Buf sql;
     unsigned long long gid;
@@ -223,7 +215,6 @@ static void handle_study_create(Request *req, Response *res)
     desc = str_dup(json_str(in, "description", ""));
     max = (int)json_int(in, "max_members", 10);
     end_date = clean_date(json_str(in, "end_date", NULL));   /* 형식이 틀리거나 없으면 NULL (종료일 없음) */
-    kind = kind_code(json_str(in, "kind", NULL));
     role = role_code(json_str(in, "role", NULL));
     if (!role)
         role = "member";
@@ -247,10 +238,6 @@ static void handle_study_create(Request *req, Response *res)
         res_error(res, 400, "bad_max", "정원은 2~50명으로 정하세요.");
         goto out;
     }
-    if (!strcmp(kind, "mentoring") && max > MENTORING_MAX_MEMBERS) {
-        res_error(res, 400, "bad_max", "멘토링 정원은 2~4명으로 정하세요.");
-        goto out;
-    }
 
     if (end_date) {
         /* 오늘보다 앞이면 만들자마자 지워지므로 받지 않는다 */
@@ -270,8 +257,8 @@ static void handle_study_create(Request *req, Response *res)
         goto out;
     }
     buf_init(&sql);
-    db_sqlf(&sql, "INSERT INTO study_groups (owner_id, name, description, max_members, end_date, kind) "
-                  "VALUES (%u, %Q, %Q, %d, %Q, %Q)", u.id, name, desc, max, end_date, kind);
+    db_sqlf(&sql, "INSERT INTO study_groups (owner_id, name, description, max_members, end_date) "
+                  "VALUES (%u, %Q, %Q, %d, %Q)", u.id, name, desc, max, end_date);
     if (!db_exec_buf(&sql)) {
         buf_free(&sql);
         db_rollback();

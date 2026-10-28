@@ -54,6 +54,13 @@ void cleanup_ensure_schema(void)
         else
             log_warn("study_groups 에 kind 열을 추가하지 못했습니다. sql/15_mentoring.sql 을 적용하세요.");
     }
+    /* 멘토링 메뉴를 없앴다 (그룹 스터디에서 멘토·멘티를 정할 수 있으므로).
+     * 남아 있던 멘토링은 멤버·역할·채팅을 그대로 둔 채 그룹 스터디로 옮긴다 */
+    {
+        long long moved = db_scalar("SELECT COUNT(*) FROM study_groups WHERE kind = 'mentoring'", 0);
+        if (moved > 0 && db_exec("UPDATE study_groups SET kind = 'study' WHERE kind = 'mentoring'"))
+            log_info("멘토링 %lld개를 그룹 스터디로 옮겼습니다.", moved);
+    }
 
     /* users.suspended_until / suspend_reason: 관리자의 회원 정지 (sql/19_suspend.sql 과 같은 내용) */
     if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "

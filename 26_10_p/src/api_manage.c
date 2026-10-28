@@ -6,7 +6,7 @@
  *   POST   /api/admin/users/{id}/suspend {days, reason}  회원 정지 (1~365일, 알림함으로 통보)
  *   DELETE /api/admin/users/{id}/suspend 정지 바로 풀기 (알림함으로 통보)
  *   POST   /api/admin/notify            회원 알림함으로 메시지 {user_id, title, body?, link?}
- *   GET    /api/admin/content?type=&q=  회원이 쓴 모든 글 (팀원 모집·그룹 스터디·멘토링·전공책)과 주인
+ *   GET    /api/admin/content?type=&q=  회원이 쓴 모든 글 (팀원 모집·그룹 스터디·전공책)과 주인
  *
  * 관리자에게는 실명·학번·이메일이 보인다 (회원 관리에 필요). 학생 화면에는 여전히 표시 이름·학과만 보인다.
  * 정지한 회원은 보기만 할 수 있고 쓰기 요청은 api.c 의 입구(suspended_blocked)에서 막힌다.
@@ -359,7 +359,7 @@ out:
 /* ------------------------------------------------------------ 전체 게시물 */
 
 /* 글 한 종류를 읽어 b 에 이어 쓴다. sql 결과 열: type, id, title, owner_id, 주인 표시 이름, 주인 학번,
- * created_at, 상태, 댓글·멤버 수. type 은 recruit / study / mentoring / book. */
+ * created_at, 상태, 댓글·멤버 수. type 은 recruit / study / book. */
 static void append_content(Buf *b, Buf *sql, int *first)
 {
     MYSQL_RES *qr = db_query_buf(sql);
@@ -386,10 +386,10 @@ static void append_content(Buf *b, Buf *sql, int *first)
     mysql_free_result(qr);
 }
 
-/* GET /api/admin/content?type=all|recruit|study|mentoring|book&q=제목
+/* GET /api/admin/content?type=all|recruit|study|book&q=제목
  * 응답: {"items":[{type,id,title,owner_id,owner_nickname,owner_student_no,created_at,status,count}, ...]}
- *   status: 모집글 open/closed, 스터디·멘토링 "멤버수/정원", 전공책 selling/reserved/sold
- *   count : 모집글·전공책은 댓글 수, 스터디·멘토링은 멤버 수
+ *   status: 모집글 open/closed, 스터디 "멤버수/정원", 전공책 selling/reserved/sold
+ *   count : 모집글·전공책은 댓글 수, 스터디는 멤버 수
  * 종류마다 따로 읽어 이어 붙이고, 최신순 정렬은 화면이 한다. */
 static void handle_content(Request *req, Response *res)
 {
@@ -420,17 +420,15 @@ static void handle_content(Request *req, Response *res)
         append_content(&b, &sql, &first);
         buf_free(&sql);
     }
-    if (all || !strcmp(type, "study") || !strcmp(type, "mentoring")) {
+    if (all || !strcmp(type, "study")) {
         buf_init(&sql);
         db_sqlf(&sql,
-                "SELECT g.kind, g.id, g.name, g.owner_id, u.nickname, u.student_no, "
+                "SELECT 'study', g.id, g.name, g.owner_id, u.nickname, u.student_no, "
                 "       DATE_FORMAT(g.created_at, '%%Y-%%m-%%d %%H:%%i'), "
                 "       CONCAT((SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id), '/', g.max_members), "
                 "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id) "
                 "FROM study_groups g JOIN users u ON u.id = g.owner_id "
                 "WHERE g.name LIKE %Q ", pat.data);
-        if (!all)
-            db_sqlf(&sql, "AND g.kind = '%s' ", !strcmp(type, "mentoring") ? "mentoring" : "study");
         db_sqlf(&sql, "ORDER BY g.created_at DESC LIMIT %d", CONTENT_LIST_MAX);
         append_content(&b, &sql, &first);
         buf_free(&sql);

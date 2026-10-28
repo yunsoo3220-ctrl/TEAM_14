@@ -9,10 +9,10 @@
  *   api_community.c : 관심 키워드·프로필, 잘 맞는 회원, 팀원 모집 글·댓글·좋아요
  *   api_study.c     : 그룹 스터디 (멤버·멘토/멘티)
  *   api_books.c     : 전공책 장터 (판매 글·사진·문의 댓글)
- *   api_invite.c    : 참여 권유 (모집글·스터디·멘토링에 회원을 메일로 초대)
+ *   api_invite.c    : 참여 권유 (모집글·스터디에 회원을 메일로 초대)
  *   api_notify.c    : 알림함 (참여 권유 등 회원에게 온 알림)
  *   api_manage.c    : 관리자 회원 관리·알림 보내기·전체 게시물
- *   api_chat.c      : 채팅방 (모집글 팀·스터디·멘토링 멤버끼리 대화)
+ *   api_chat.c      : 채팅방 (모집글 팀·스터디 멤버끼리 대화)
  * 이 헤더는 그 파일들이 서로 공유해야 하는 타입과 함수만 모아 둔 것이다.
  */
 #ifndef SKU_API_H
@@ -85,10 +85,10 @@ int  profile_text(unsigned user_id, Buf *out);
  *   bio           : 자기소개 문장 (NULL 이면 빈 문자열로 취급) */
 int  profile_save(unsigned user_id, const unsigned *tag_ids, int ntags, const char *bio);
 
-/* 참여 권유 대상: 팀원 모집글(kind "recruit") 또는 스터디·멘토링(kind "study"). api_invite.c */
+/* 참여 권유 대상: 팀원 모집글(kind "recruit") 또는 그룹 스터디(kind "study"). api_invite.c */
 typedef struct {
     char     kind[12];       /* "recruit" / "study" (invitations.target_kind) */
-    char     subkind[12];    /* "recruit" / "study" / "mentoring" (화면 이름·주소용) */
+    char     subkind[12];    /* "recruit" / "study" (화면 이름·주소용) */
     unsigned id;
     unsigned owner_id;       /* 모집글 작성자 / 스터디 방장 */
     char     title[304];     /* 모집글 제목 / 스터디 이름 */
