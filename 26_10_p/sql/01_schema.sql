@@ -286,19 +286,22 @@ CREATE TABLE recruit_likes (
 
 
 -- --------------------------------------------------------------------------------------------------------
--- 그룹 스터디·멘토링 (kind 로 구분). 만든 사람(owner)이 방장으로 멤버 추가·역할 지정·삭제를 한다.
+-- 그룹 스터디. 만든 사람(owner)이 방장으로 멤버 추가·역할(멘토·멘티) 지정·삭제를 한다.
 CREATE TABLE study_groups (
   id          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
   owner_id    INT UNSIGNED  NOT NULL,                 -- 방장
   name        VARCHAR(100)  NOT NULL,                 -- 스터디 이름
   description VARCHAR(1000) NOT NULL DEFAULT '',
   max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
+  department_id INT UNSIGNED NULL,                    -- 대상 학과 (NULL = 학과 무관). "내 학과 대상" 탭이 이 값으로 거른다
   end_date    DATE          NULL,                    -- 종료일 (지나면 자동 삭제, NULL = 없음)
-  kind        ENUM('study','mentoring') NOT NULL DEFAULT 'study',  -- 그룹 스터디 / 멘토링
+  kind        ENUM('study','mentoring') NOT NULL DEFAULT 'study',  -- 늘 'study' (멘토링 메뉴는 없앴다. 예전 DB 와 맞추려고 남김)
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_study_groups_owner (owner_id),
-  CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE
+  KEY ix_study_groups_department (department_id),
+  CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sg_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 -- 스터디 멤버와 역할 (member = 일반, mentor = 멘토, mentee = 멘티)
@@ -363,7 +366,7 @@ CREATE TABLE book_comments (
 -- 참여 권유: 모집글 작성자·스터디 방장이 [팀원 찾기] 에서 회원에게 보낸 권유 메일 기록 (같은 모임·같은 회원은 한 번만)
 CREATE TABLE invitations (
   id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  target_kind ENUM('recruit','study') NOT NULL,          -- recruit = 팀원 모집글, study = 그룹 스터디·멘토링
+  target_kind ENUM('recruit','study') NOT NULL,          -- recruit = 팀원 모집글, study = 그룹 스터디
   target_id   INT UNSIGNED NOT NULL,                     -- recruits.id 또는 study_groups.id
   inviter_id  INT UNSIGNED NOT NULL,                     -- 권유한 회원 (작성자·방장)
   invitee_id  INT UNSIGNED NOT NULL,                     -- 권유받은 회원
@@ -407,10 +410,10 @@ CREATE TABLE recruit_members (
 ) ENGINE=InnoDB;
 
 
--- 채팅방 메시지: 방 = 모집글 팀(recruit) 또는 스터디·멘토링(study). 방이 지워지면 자동 정리(cleanup.c)가 지운다
+-- 채팅방 메시지: 방 = 모집글 팀(recruit) 또는 그룹 스터디(study). 방이 지워지면 자동 정리(cleanup.c)가 지운다
 CREATE TABLE chat_messages (
   id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
-  room_kind  ENUM('recruit','study') NOT NULL,         -- recruit = 모집글 팀, study = 그룹 스터디·멘토링
+  room_kind  ENUM('recruit','study') NOT NULL,         -- recruit = 모집글 팀, study = 그룹 스터디
   room_id    INT UNSIGNED  NOT NULL,                   -- recruits.id 또는 study_groups.id
   user_id    INT UNSIGNED  NOT NULL,                   -- 쓴 회원
   body       VARCHAR(1000) NOT NULL,

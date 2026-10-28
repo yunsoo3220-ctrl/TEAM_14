@@ -54,6 +54,29 @@ void cleanup_ensure_schema(void)
         else
             log_warn("study_groups 에 kind 열을 추가하지 못했습니다. sql/15_mentoring.sql 을 적용하세요.");
     }
+    /* 멘토링 메뉴를 없앴다 (그룹 스터디에서 멘토·멘티를 정할 수 있으므로).
+     * 남아 있던 멘토링은 멤버·역할·채팅을 그대로 둔 채 그룹 스터디로 옮긴다 */
+    {
+        long long moved = db_scalar("SELECT COUNT(*) FROM study_groups WHERE kind = 'mentoring'", 0);
+        if (moved > 0 && db_exec("UPDATE study_groups SET kind = 'study' WHERE kind = 'mentoring'"))
+            log_info("멘토링 %lld개를 그룹 스터디로 옮겼습니다.", moved);
+    }
+
+    /* study_groups.department_id: 스터디 대상 학과 (sql/21_study_department.sql 과 같은 내용).
+     * 열을 처음 만들 때만, 이미 있던 스터디는 방장의 학과로 채운다 (만들기 화면의 기본값과 같다) */
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "
+                  "WHERE table_schema = DATABASE() AND table_name = 'study_groups' "
+                  "AND column_name = 'department_id'", 1) == 0) {
+        if (db_exec("ALTER TABLE study_groups ADD COLUMN department_id INT UNSIGNED NULL AFTER max_members, "
+                    "ADD KEY ix_study_groups_department (department_id), "
+                    "ADD CONSTRAINT fk_sg_department FOREIGN KEY (department_id) "
+                    "REFERENCES departments (id) ON DELETE SET NULL")) {
+            db_exec("UPDATE study_groups g JOIN users u ON u.id = g.owner_id SET g.department_id = u.department_id");
+            log_info("study_groups 에 대상 학과(department_id) 열을 추가했습니다.");
+        } else {
+            log_warn("study_groups 에 department_id 열을 추가하지 못했습니다. sql/21_study_department.sql 을 적용하세요.");
+        }
+    }
 
     /* users.suspended_until / suspend_reason: 관리자의 회원 정지 (sql/19_suspend.sql 과 같은 내용) */
     if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "

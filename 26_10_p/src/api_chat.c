@@ -1,4 +1,4 @@
-/* 채팅방 (팀원 모집 팀 · 그룹 스터디 · 멘토링에 들어간 사람끼리 대화)
+/* 채팅방 (팀원 모집 팀 · 그룹 스터디에 들어간 사람끼리 대화)
  *
  *   GET    /api/chats                              내 채팅방 목록 + 방마다 마지막 메시지·안 읽은 수 (로그인)
  *   GET    /api/chats/{recruit|study}/{id}         방 정보·멤버 + 최근 메시지 CHAT_PAGE 개 (멤버만)
@@ -9,7 +9,7 @@
  *
  * 방은 따로 만들지 않는다. 모집글 하나·스터디 하나가 곧 방 하나다.
  *   recruit 방 = 모집글 팀 (작성자 + 작성자가 받은 팀원, recruit_members)
- *   study 방   = 그룹 스터디·멘토링 멤버 (study_members)
+ *   study 방   = 그룹 스터디 멤버 (study_members)
  * 그래서 모임에 들어가면 바로 그 방에 들어갈 수 있고, 나가거나 내보내지면 더는 볼 수 없다.
  * 모임이 지워지면 메시지도 자동 정리(cleanup.c)가 지운다.
  * 관리자도 멤버가 아니면 대화를 볼 수 없다 (회원끼리의 대화이므로).
@@ -39,7 +39,7 @@
 
 typedef struct {
     const char *kind;        /* "recruit" / "study" (chat_messages.room_kind, 코드 상수) */
-    char     subkind[12];    /* "recruit" / "study" / "mentoring" (화면 이름·주소용) */
+    char     subkind[12];    /* "recruit" / "study" (화면 이름·주소용) */
     unsigned id;
     unsigned owner_id;       /* 모집글 작성자 / 스터디 방장 */
     char     title[304];
@@ -59,7 +59,7 @@ static int room_find(const char *kind, unsigned id, ChatRoom *r)
     if (!strcmp(kind, "recruit"))
         db_sqlf(&sql, "SELECT author_id, title, 'recruit', status = 'open' FROM recruits WHERE id = %u", id);
     else
-        db_sqlf(&sql, "SELECT owner_id, name, kind, 1 FROM study_groups WHERE id = %u", id);
+        db_sqlf(&sql, "SELECT owner_id, name, 'study', 1 FROM study_groups WHERE id = %u", id);
     qr = db_query_buf(&sql);
     buf_free(&sql);
     row = qr ? mysql_fetch_row(qr) : NULL;
@@ -97,11 +97,10 @@ static int room_member(const ChatRoom *r, unsigned uid)
     return n > 0;
 }
 
-/* 방의 화면 주소 (#/recruits/3, #/studies/4, #/mentoring/5) */
+/* 방의 화면 주소 (#/recruits/3, #/studies/4) */
 static void room_link(const ChatRoom *r, char *out, size_t outsz)
 {
-    const char *path = !strcmp(r->subkind, "mentoring") ? "mentoring"
-                     : !strcmp(r->subkind, "study")     ? "studies" : "recruits";
+    const char *path = !strcmp(r->subkind, "study") ? "studies" : "recruits";
     snprintf(out, outsz, "#/%s/%u", path, r->id);
 }
 
@@ -285,9 +284,9 @@ static void handle_rooms(Request *req, Response *res)
     n = collect_rooms(&sql, rows, n);
     buf_free(&sql);
 
-    /* 스터디·멘토링: 내가 멤버인 것 */
+    /* 스터디: 내가 멤버인 것 */
     buf_init(&sql);
-    buf_puts(&sql, "SELECT 'study', g.id, g.kind, g.name, "
+    buf_puts(&sql, "SELECT 'study', g.id, 'study', g.name, "
                    "(SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id), 'open', ");
     append_last_cols(&sql, "study", "g.id", u.id);
     buf_puts(&sql, "FROM study_groups g ");
@@ -305,7 +304,7 @@ static void handle_rooms(Request *req, Response *res)
         const RoomRow *r = &rows[i];
         char link[48];
         snprintf(link, sizeof link, "#/%s/%u",
-                 !strcmp(r->subkind, "mentoring") ? "mentoring" : !strcmp(r->subkind, "study") ? "studies" : "recruits",
+                 !strcmp(r->subkind, "study") ? "studies" : "recruits",
                  r->id);
         if (i)
             buf_putc(&b, ',');

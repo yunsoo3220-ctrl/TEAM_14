@@ -35,6 +35,7 @@
 #define SKU_ML_H
 
 #define ML_MAX_TERMS 4   /* 결과 하나당 돌려주는 근거 키워드 최대 개수 */
+#define ML_MIN_SCORE 25  /* 학과별 추천에서 이 점수 미만은 관련 없음으로 본다 (공모전·스터디·전공책 공통) */
 
 /* 순위 결과 한 건 (게시물 또는 학과 또는 사용자) */
 typedef struct {
@@ -71,6 +72,13 @@ int ml_rank_departments(unsigned post_id, int min_score, MlHit *out, int max, Ml
  * 확률 높은 순으로 max 개까지 담고 개수를 돌려준다. 모델을 만들 수 없으면 -1.
  * 관리자가 새 게시물을 작성하는 중에 "추천 대상 학과" 를 미리 보여 주는 데 쓴다. */
 int ml_predict_departments(const char *title, const char *body, MlHit *out, int max, MlInfo *info);
+
+/* 게시물 모델 밖의 글 n 개(스터디 이름·소개, 전공책 제목·설명 등)가 학과 하나와 맞는 정도를
+ * 지금 모델로 매겨 점수 순으로 out 에 담는다 (재학습 없음, out[k].id 는 ids 가운데 하나).
+ * 스터디·전공책의 "학과별 추천" 탭에 쓴다. out 은 n 칸이어야 한다.
+ * 담은 개수 (min_score 미만은 뺀다), 없는 학과면 0, 모델을 만들 수 없으면 -1. */
+int ml_rank_texts(unsigned department_id, const unsigned *ids, const char *const *titles,
+                  const char *const *bodies, int n, int min_score, MlHit *out, MlInfo *info);
 
 /* 강제로 다시 학습한다. 성공 시 1. */
 int ml_retrain(MlInfo *info);

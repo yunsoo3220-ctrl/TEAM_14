@@ -1,6 +1,7 @@
 /* 전공책 장터 (중고 전공책 사고팔기)
  *
  *   GET    /api/books                     책 목록 ?q=검색어&dept=학과id&status=on|all&mine=1&sort=new|price_asc|price_desc
+ *                                         ?reco=학과id 면 판매 중인 책을 그 학과와 관련 있는 순으로 (자체 모델, 학과별 추천)
  *   POST   /api/books                     판매 글 쓰기 {title, author?, course?, department_id?, price,
  *                                                       condition, description?, photos:["data:image/jpeg;base64,..."]} (로그인)
  *   GET    /api/books/{id}                책 + 사진 번호 + 문의 댓글
@@ -23,6 +24,7 @@
  */
 #include "api.h"
 #include "db.h"
+#include "ml.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -133,20 +135,23 @@ static int book_manage_ok(unsigned bid, const CurrentUser *u)
 /* ------------------------------------------------------------ 목록 */
 
 /* 목록 행: id, title, author, course, 과목 학과 이름, price, condition, status, created_at,
- *          seller_id, 판매자 표시 이름, 판매자 학과, 대표 사진 id(0 = 없음), 사진 수, 댓글 수, 설명 앞부분, 학과 id */
+ *          seller_id, 판매자 표시 이름, 판매자 학과, 대표 사진 id(0 = 없음), 사진 수, 댓글 수, 설명 앞부분, 학과 id,
+ *          설명 전체 (학과별 추천에서 쓴다) */
 #define BOOK_SELECT \
     "SELECT b.id, b.title, b.author, b.course, IFNULL(d.name, ''), b.price, b.book_condition, b.status, " \
     "       DATE_FORMAT(b.created_at, '%%Y-%%m-%%d %%H:%%i'), b.seller_id, u.nickname, IFNULL(sd.name, ''), " \
     "       IFNULL((SELECT p.id FROM book_photos p WHERE p.book_id = b.id ORDER BY p.sort_order, p.id LIMIT 1), 0), " \
     "       (SELECT COUNT(*) FROM book_photos p WHERE p.book_id = b.id), " \
     "       (SELECT COUNT(*) FROM book_comments c WHERE c.book_id = b.id), " \
-    "       LEFT(REPLACE(REPLACE(b.description, '\\r', ''), '\\n', ' '), 100), IFNULL(b.department_id, 0) " \
+    "       LEFT(REPLACE(REPLACE(b.description, '\\r', ''), '\\n', ' '), 100), IFNULL(b.department_id, 0), " \
+    "       b.description " \
     "FROM books b JOIN users u ON u.id = b.seller_id " \
     "LEFT JOIN departments d ON d.id = b.department_id " \
     "LEFT JOIN departments sd ON sd.id = u.department_id "
 
-/* BOOK_SELECT 결과 한 행을 JSON 객체로 쓴다 */
-static void write_book_row(Buf *b, MYSQL_ROW row)
+/* BOOK_SELECT 결과 한 행을 JSON 객체로 쓴다.
+ * hit 가 있으면(학과별 추천) 학과 관련도 점수와 근거 키워드도 덧붙인다. */
+static void write_book_row(Buf *b, MYSQL_ROW row, const MlHit *hit)
 {
     buf_putc(b, '{');
     json_kv_int(b, "id", atoll(row[0]));                           buf_putc(b, ',');
@@ -166,20 +171,66 @@ static void write_book_row(Buf *b, MYSQL_ROW row)
     json_kv_int(b, "comment_count", atoll(row[14]));               buf_putc(b, ',');
     json_kv_str(b, "excerpt", row[15]);                            buf_putc(b, ',');
     json_kv_int(b, "department_id", atoll(row[16]));
+    if (hit) {
+        buf_putc(b, ',');
+        json_kv_int(b, "score", hit->score);
+        buf_putc(b, ',');
+        ml_write_terms(b, hit);
+    }
     buf_putc(b, '}');
 }
 
-/* GET /api/books?q=&dept=&status=on|all&mine=1&sort=new|price_asc|price_desc
- * status 기본값 on = 판매 중·예약 중만 (판매 완료는 all 일 때만 보인다) */
+/* 학과별 추천: rows 의 책을 학과 dept 와 관련 있는 순으로 b 에 쓴다 (ML_MIN_SCORE 미만은 뺀다).
+ * 모델에 넘기는 글 = 제목: 책 제목, 본문: 과목 · 저자 · 설명 · 학과 이름. 모델을 만들 수 없으면 0.
+ * (api_study.c 의 write_reco_studies 와 같은 틀) */
+static int write_reco_books(Buf *b, MYSQL_ROW *rows, int n, unsigned dept)
+{
+    unsigned *ids = (unsigned *)calloc((size_t)n, sizeof *ids);
+    const char **titles = (const char **)calloc((size_t)n, sizeof *titles);
+    char **bodies = (char **)calloc((size_t)n, sizeof *bodies);
+    MlHit *hits = (MlHit *)calloc((size_t)n, sizeof *hits);
+    int i, k, m = -1;
+
+    if (ids && titles && bodies && hits) {
+        for (i = 0; i < n; i++) {
+            Buf t;
+            buf_init(&t);
+            buf_printf(&t, "%s\n%s\n%s\n%s", rows[i][3], rows[i][2], rows[i][17], rows[i][4]);
+            ids[i] = (unsigned)strtoul(rows[i][0], NULL, 10);
+            titles[i] = rows[i][1];
+            bodies[i] = t.data;   /* 메모리가 모자라 NULL 이면 모델이 빈 글로 본다 */
+        }
+        m = ml_rank_texts(dept, ids, titles, (const char *const *)bodies, n, ML_MIN_SCORE, hits, NULL);
+        for (k = 0; k < m; k++)
+            for (i = 0; i < n; i++)
+                if (ids[i] == hits[k].id) {
+                    if (k)
+                        buf_putc(b, ',');
+                    write_book_row(b, rows[i], &hits[k]);
+                    break;
+                }
+        for (i = 0; i < n; i++)
+            free(bodies[i]);
+    }
+    free(ids);
+    free(titles);
+    free(bodies);
+    free(hits);
+    return m >= 0;
+}
+
+/* GET /api/books?q=&dept=&status=on|all&mine=1&sort=new|price_asc|price_desc&reco=학과id
+ * status 기본값 on = 판매 중·예약 중만 (판매 완료는 all 일 때만 보인다)
+ * reco 가 있으면 다른 조건으로 고른 책을 그 학과와 관련 있는 순으로 다시 늘어놓는다 (학과별 추천) */
 static void handle_book_list(Request *req, Response *res)
 {
     CurrentUser u;
-    char q[128] = "", dept[12] = "", status[8] = "", mine[4] = "", sort[16] = "";
+    char q[128] = "", dept[12] = "", status[8] = "", mine[4] = "", sort[16] = "", reco[12] = "";
     Buf sql, b;
     MYSQL_RES *qr;
-    MYSQL_ROW row;
-    int first = 1;
-    unsigned dept_id;
+    MYSQL_ROW rows[BOOK_LIST_MAX];   /* 결과 행들 (고른 정렬 순) */
+    int n = 0, i;
+    unsigned dept_id, reco_id;
 
     auth_current(req, &u);
     req_query(req, "q", q, sizeof q);
@@ -187,8 +238,10 @@ static void handle_book_list(Request *req, Response *res)
     req_query(req, "status", status, sizeof status);
     req_query(req, "mine", mine, sizeof mine);
     req_query(req, "sort", sort, sizeof sort);
+    req_query(req, "reco", reco, sizeof reco);
     str_trim(q);
     dept_id = (unsigned)strtoul(dept, NULL, 10);
+    reco_id = (unsigned)strtoul(reco, NULL, 10);
 
     buf_init(&sql);
     db_sqlf(&sql, BOOK_SELECT "WHERE 1 = 1 ");   /* db_sqlf 가 BOOK_SELECT 안의 %% 를 % 로 바꾼다 */
@@ -229,15 +282,26 @@ static void handle_book_list(Request *req, Response *res)
         return;
     }
 
+    while (n < BOOK_LIST_MAX && (rows[n] = mysql_fetch_row(qr)) != NULL)
+        n++;
+
     buf_init(&b);
     buf_puts(&b, "{\"books\":[");
-    while ((row = mysql_fetch_row(qr)) != NULL) {
-        if (!first)
-            buf_putc(&b, ',');
-        first = 0;
-        write_book_row(&b, row);
+    if (reco_id && n > 0) {
+        if (!write_reco_books(&b, rows, n, reco_id)) {
+            buf_free(&b);
+            mysql_free_result(qr);
+            res_error(res, 500, "model_error", "추천 모델을 만들 수 없습니다.");
+            return;
+        }
+    } else {
+        for (i = 0; i < n; i++) {
+            if (i)
+                buf_putc(&b, ',');
+            write_book_row(&b, rows[i], NULL);
+        }
     }
-    mysql_free_result(qr);
+    mysql_free_result(qr);   /* rows 포인터를 다 쓴 뒤에 해제 */
     buf_puts(&b, "]}");
     res_json_buf(res, 200, &b);
     buf_free(&b);
@@ -414,18 +478,10 @@ static void handle_book_detail(Request *req, Response *res, unsigned bid)
 
     buf_init(&b);
     buf_puts(&b, "{\"book\":");
-    write_book_row(&b, row);
-    mysql_free_result(qr);
-
-    buf_init(&sql);
-    db_sqlf(&sql, "SELECT description FROM books WHERE id = %u", bid);
-    qr = db_query_buf(&sql);
-    buf_free(&sql);
-    row = qr ? mysql_fetch_row(qr) : NULL;
+    write_book_row(&b, row, NULL);
     buf_puts(&b, ",\"description\":");
-    json_write_str(&b, row ? row[0] : "");
-    if (qr)
-        mysql_free_result(qr);
+    json_write_str(&b, row[17]);   /* BOOK_SELECT 의 마지막 열 = 설명 전체 */
+    mysql_free_result(qr);
 
     buf_puts(&b, ",\"photos\":[");
     buf_init(&sql);

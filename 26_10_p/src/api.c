@@ -474,11 +474,11 @@ static void handle_send_code(Request *req, Response *res)
     /* 메일 본문을 만들어 보낸다 */
     buf_init(&text);
     buf_printf(&text,
-               "SKU14 공모전 팀원 모집 커뮤니티 가입 인증 코드입니다.\n\n"
+               "서경스터디 공모전 팀원 모집 커뮤니티 가입 인증 코드입니다.\n\n"
                "    %s\n\n"
                "가입 화면에 이 코드를 입력하세요. %d분 동안 유효합니다.\n"
                "직접 요청하지 않았다면 이 메일은 무시하세요.\n", code, CODE_TTL_MIN);
-    if (!mail_send(email, "[SKU14] 이메일 인증 코드", text.data, err, sizeof err)) {
+    if (!mail_send(email, "[서경스터디] 이메일 인증 코드", text.data, err, sizeof err)) {
         buf_free(&text);
         res_error(res, 502, "mail_failed", err);
         return;

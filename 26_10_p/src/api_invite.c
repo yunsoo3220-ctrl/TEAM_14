@@ -1,10 +1,10 @@
-/* 참여 권유 (팀원 모집글 · 그룹 스터디 · 멘토링에 회원을 메일로 초대)
+/* 참여 권유 (팀원 모집글 · 그룹 스터디에 회원을 메일로 초대)
  *
  *   POST /api/invitations                 {kind:"recruit"|"study", id, user_id} (모집글 작성자·스터디 방장)
  *   POST /api/notifications/{id}/accept   알림함의 권유 알림에서 [참여하기] (권유받은 회원)
  *
  * [참여하기] 는 대상에 따라 다르게 동작한다.
- *   스터디·멘토링 → 바로 멤버로 들어간다 (역할은 member, 방장이 나중에 멘토·멘티로 정할 수 있다).
+ *   그룹 스터디   → 바로 멤버로 들어간다 (역할은 member, 방장이 나중에 멘토·멘티로 정할 수 있다).
  *   팀원 모집글   → 팀원(recruit_members)이 되고, 글쓴이가 볼 수 있게 "참여하고 싶다" 는 댓글도 남긴다.
  * 어느 쪽이든 권유한 사람(작성자·방장)의 알림함에 수락 알림이 가고, 같은 권유는 한 번만 수락할 수 있다.
  *
@@ -47,9 +47,9 @@ int invite_target(const char *kind, unsigned id, InviteTarget *t)
         db_sqlf(&sql, "SELECT author_id, title, status = 'open', 'recruit' FROM recruits WHERE id = %u", id);
         str_copy(t->kind, sizeof t->kind, "recruit");
     } else if (!strcmp(kind, "study")) {
-        /* 스터디·멘토링: 정원이 남아 있어야 권유할 수 있다 */
+        /* 스터디: 정원이 남아 있어야 권유할 수 있다 */
         db_sqlf(&sql, "SELECT g.owner_id, g.name, "
-                      "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id) < g.max_members, g.kind "
+                      "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id) < g.max_members, 'study' "
                       "FROM study_groups g WHERE g.id = %u", id);
         str_copy(t->kind, sizeof t->kind, "study");
     } else {
@@ -64,7 +64,7 @@ int invite_target(const char *kind, unsigned id, InviteTarget *t)
         t->owner_id = (unsigned)strtoul(row[0], NULL, 10);
         str_copy(t->title, sizeof t->title, row[1]);
         t->open = row[2][0] == '1';
-        str_copy(t->subkind, sizeof t->subkind, row[3]);   /* recruit / study / mentoring */
+        str_copy(t->subkind, sizeof t->subkind, row[3]);   /* recruit / study */
         found = 1;
     }
     if (qr)
@@ -105,15 +105,13 @@ int invite_sent(const InviteTarget *t, unsigned user_id)
 /* 대상 종류의 화면 이름과 주소(#/...) 앞부분 */
 static const char *target_label(const InviteTarget *t)
 {
-    if (!strcmp(t->subkind, "mentoring")) return "멘토링";
-    if (!strcmp(t->subkind, "study"))     return "그룹 스터디";
+    if (!strcmp(t->subkind, "study")) return "그룹 스터디";
     return "팀원 모집";
 }
 
 static const char *target_path(const InviteTarget *t)
 {
-    if (!strcmp(t->subkind, "mentoring")) return "mentoring";
-    if (!strcmp(t->subkind, "study"))     return "studies";
+    if (!strcmp(t->subkind, "study")) return "studies";
     return "recruits";
 }
 
@@ -230,17 +228,17 @@ static void handle_invite(Request *req, Response *res)
     if (email[0] && (mail_enabled() || mail_dev_mode())) {
         api_site_url(req, site, sizeof site);
         buf_init(&subject);
-        buf_printf(&subject, "[SKU14] %s 님이 %s 참여를 권유했습니다", u.nickname, target_label(&t));
+        buf_printf(&subject, "[서경스터디] %s 님이 %s 참여를 권유했습니다", u.nickname, target_label(&t));
         buf_init(&text);
         buf_printf(&text,
                    "안녕하세요, %s 님.\n\n"
-                   "%s 님%s%s%s이 SKU14 에서 아래 %s에 함께하자고 권유했습니다.\n\n"
+                   "%s 님%s%s%s이 서경스터디에서 아래 %s에 함께하자고 권유했습니다.\n\n"
                    "  %s\n\n"
                    "자세히 보기: %s/%s\n\n"
                    "관심이 있다면 링크에서 내용을 확인하고 댓글이나 [참여하기] 로 답해 주세요.\n"
-                   "SKU14 에 로그인하면 알림함에서도 이 권유를 볼 수 있습니다.\n\n"
+                   "서경스터디에 로그인하면 알림함에서도 이 권유를 볼 수 있습니다.\n\n"
                    "-- \n"
-                   "이 메일은 SKU14 회원이 '참여 권유' 버튼을 눌러 보냈습니다.\n"
+                   "이 메일은 서경스터디 회원이 '참여 권유' 버튼을 눌러 보냈습니다.\n"
                    "같은 모임에서는 한 번만 보낼 수 있으며, 회원님의 메일 주소는 상대에게 알려지지 않습니다.\n",
                    nickname, u.nickname,
                    u.department_name[0] ? "(" : "", u.department_name, u.department_name[0] ? ")" : "",
@@ -258,7 +256,8 @@ static void handle_invite(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 알림함에서 수락 */
 
-/* 알림의 link("#/recruits/3", "#/studies/4", "#/mentoring/5")로 대상을 찾는다. 있으면 1.
+/* 알림의 link("#/recruits/3", "#/studies/4")로 대상을 찾는다. 있으면 1.
+ * "#/mentoring/5" 는 멘토링 메뉴를 없애기 전에 보낸 알림이다 (그 모임은 이제 그룹 스터디다).
  * link 는 권유를 보낼 때 서버가 만든 값이다 (handle_invite). */
 static int target_from_link(const char *link, InviteTarget *t)
 {

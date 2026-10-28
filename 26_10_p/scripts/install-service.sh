@@ -94,7 +94,7 @@ SERVER_ARGS="--port $PORT"
 echo "sku14.service 등록 (포트 $PORT, 사용자 $RUN_USER)"
 sudo tee "$UNIT_DIR/sku14.service" >/dev/null <<EOF
 [Unit]
-Description=SKU14 공모전 팀원 모집 커뮤니티 서버
+Description=서경스터디 공모전 팀원 모집 커뮤니티 서버
 # DB 가 먼저 떠야 한다 (없는 서비스 이름은 무시된다)
 After=network-online.target mysql.service mariadb.service
 Wants=network-online.target
@@ -121,7 +121,7 @@ if [ -x "$PROJECT/ml/.venv/bin/python" ]; then
     echo "sku14-embed.service 등록 (딥러닝 임베딩, 127.0.0.1:8001)"
     sudo tee "$UNIT_DIR/sku14-embed.service" >/dev/null <<EOF
 [Unit]
-Description=SKU14 문장 임베딩 서비스 (ml/embed_server.py)
+Description=서경스터디 문장 임베딩 서비스 (ml/embed_server.py)
 After=network-online.target
 Wants=network-online.target
 
@@ -149,7 +149,7 @@ if [ "$CRAWL" = 1 ]; then
     echo "sku14-crawl.timer 등록 (매일 06:00 학교 공지 수집)"
     sudo tee "$UNIT_DIR/sku14-crawl.service" >/dev/null <<EOF
 [Unit]
-Description=SKU14 학교 공지 수집 (server --crawl)
+Description=서경스터디 학교 공지 수집 (server --crawl)
 After=network-online.target mysql.service mariadb.service
 Wants=network-online.target
 
@@ -162,7 +162,7 @@ NoNewPrivileges=true
 EOF
     sudo tee "$UNIT_DIR/sku14-crawl.timer" >/dev/null <<EOF
 [Unit]
-Description=SKU14 학교 공지 매일 수집
+Description=서경스터디 학교 공지 매일 수집
 
 [Timer]
 OnCalendar=*-*-* 06:00:00
