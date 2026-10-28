@@ -4,6 +4,7 @@
 USE sku_contest;
 
 -- 학생은 가입할 때 학교 이메일을 인증한다. 관리자·예전 회원은 비어 있을 수 있다.
+-- 열 추가와 유일 키 추가를 한 문장으로. 기존 회원은 NULL 이 되며, UNIQUE 는 NULL 끼리는 중복으로 보지 않는다.
 ALTER TABLE users ADD COLUMN email VARCHAR(120) NULL AFTER phone,
                   ADD UNIQUE KEY uq_users_email (email);
 

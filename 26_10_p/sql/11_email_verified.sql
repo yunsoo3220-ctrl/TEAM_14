@@ -3,4 +3,5 @@
 USE sku_contest;
 
 -- 코드가 맞은 시각. 이 뒤로 30분 안에 가입을 마치면 된다. 코드를 다시 받으면 비운다.
+-- NULL = 아직 확인 전, 값이 있으면 확인 완료 (src/api.c 의 email_verified() 가 이 값과 expires_at 을 함께 본다)
 ALTER TABLE email_verifications ADD COLUMN verified_at DATETIME NULL AFTER attempts;

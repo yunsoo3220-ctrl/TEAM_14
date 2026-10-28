@@ -6,6 +6,7 @@ INSERT INTO app_config (k, v) VALUES ('crawl.window_days', '730')
 ON DUPLICATE KEY UPDATE v = VALUES(v);
 
 -- 예전에 수집한 게시물의 등록 시각을 학교 공지 게시일로 맞춘다 (새 크롤러와 같은 기준).
+-- 다중 테이블 UPDATE: 공지와 연결된 게시물만 골라 고친다. author_id IS NULL = 자동으로 올라온 글.
 UPDATE posts p JOIN notices n ON n.post_id = p.id
 SET p.created_at = n.published_at
 WHERE p.author_id IS NULL;

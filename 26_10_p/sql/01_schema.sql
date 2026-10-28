@@ -3,8 +3,22 @@
 --
 -- 핵심 규칙: 관리자가 공모전 게시물을 올릴 때 대상 학과를 체크하고(post_departments),
 --            체크된 학과에 소속된 사용자만 해당 게시물에 댓글을 쓸 수 있다.
+--
+-- 읽는 법:
+--   INT UNSIGNED       0 이상 정수 (id 는 음수가 없으므로 범위를 두 배로 쓴다)
+--   AUTO_INCREMENT     INSERT 할 때 id 를 1, 2, 3 ... 으로 자동 부여
+--   PRIMARY KEY        행을 구분하는 기본 키 (중복·NULL 불가, 자동으로 색인됨)
+--   UNIQUE KEY         중복을 허용하지 않는 색인 (예: 같은 학번으로 두 번 가입 불가)
+--   KEY / INDEX        검색을 빠르게 하는 색인 (WHERE, JOIN, ORDER BY 에 자주 쓰는 열)
+--   FOREIGN KEY        다른 표의 행을 가리키는 열. 없는 행을 가리키지 못하게 DB 가 막는다
+--     ON DELETE CASCADE    가리키던 행이 지워지면 이 행도 함께 지운다 (예: 게시물 → 그 댓글)
+--     ON DELETE SET NULL   가리키던 행이 지워지면 이 열만 NULL 로 (예: 탈퇴 회원의 글은 남김)
+--   ENGINE=InnoDB      트랜잭션과 외래 키를 지원하는 MySQL 기본 저장 엔진
+--
+-- 주의: 아래 첫 문장은 기존 DB 를 통째로 지운다. 운영 중인 DB 에는 실행하지 말 것.
 
 DROP DATABASE IF EXISTS sku_contest;
+-- utf8mb4: 한글·이모지까지 담는 UTF-8, utf8mb4_unicode_ci: 대소문자 구분 없는 유니코드 정렬 규칙
 CREATE DATABASE sku_contest
   DEFAULT CHARACTER SET utf8mb4
   DEFAULT COLLATE utf8mb4_unicode_ci;
@@ -12,15 +26,17 @@ USE sku_contest;
 
 -- ---------------------------------------------------------------- 대학 / 학과
 
+-- 단과대학 (예: 공과대학). 내용은 02_seed_departments.sql 이 넣는다.
 CREATE TABLE colleges (
   id    INT UNSIGNED NOT NULL AUTO_INCREMENT,
   name  VARCHAR(60)  NOT NULL,
   slug  VARCHAR(80)  NOT NULL,          -- skuniv.ac.kr 의 영문 경로
-  sort  SMALLINT     NOT NULL DEFAULT 0,
+  sort  SMALLINT     NOT NULL DEFAULT 0,       -- 화면 표시 순서 (작을수록 앞)
   PRIMARY KEY (id),
   UNIQUE KEY uq_colleges_name (name)
 ) ENGINE=InnoDB;
 
+-- 학과. 단과대학이 지워지면 소속 학과도 함께 지워진다 (CASCADE).
 CREATE TABLE departments (
   id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
   college_id INT UNSIGNED NOT NULL,
@@ -35,6 +51,7 @@ CREATE TABLE departments (
 
 -- -------------------------------------------------------------------- 사용자
 
+-- 회원 (학생과 관리자). 비밀번호는 평문 대신 솔트와 해시만 저장한다 (src/sha256.c).
 CREATE TABLE users (
   id            INT UNSIGNED NOT NULL AUTO_INCREMENT,
   student_no    VARCHAR(20)  NOT NULL,            -- 학번 (로그인 ID)
@@ -47,15 +64,17 @@ CREATE TABLE users (
   department_id INT UNSIGNED NULL,                -- 관리자는 NULL 허용
   bio           VARCHAR(500) NOT NULL DEFAULT '', -- 자유롭게 적는 자기소개 (다른 회원에게 보인다)
   role         ENUM('student','admin') NOT NULL DEFAULT 'student',
+  suspended_until DATETIME   NULL,                 -- 관리자가 정지한 회원: 이 시각까지 보기만 가능 (NULL·지난 시각 = 정지 아님)
+  suspend_reason VARCHAR(300) NOT NULL DEFAULT '',  -- 정지 사유
   pw_salt       CHAR(32)     NOT NULL,            -- hex 16바이트
   pw_hash       CHAR(64)     NOT NULL,            -- hex SHA-256 (반복 해싱)
   created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_student_no (student_no),
-  UNIQUE KEY uq_users_email (email),
+  UNIQUE KEY uq_users_email (email),               -- UNIQUE 는 NULL 을 여러 개 허용한다 (관리자 여럿 가능)
   KEY ix_users_department (department_id),
   CONSTRAINT fk_users_department
-    FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
+    FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL   -- 학과가 없어져도 회원은 남긴다
 ) ENGINE=InnoDB;
 
 -- 가입 때 보낸 학교 이메일 인증 코드. 코드는 해시로만 남기고, 가입에 성공하면 지운다.
@@ -67,29 +86,31 @@ CREATE TABLE email_verifications (
   verified_at DATETIME    NULL,                     -- [확인]으로 코드가 맞은 시각 (뒤로 30분 안에 가입)
   sent_at    DATETIME     NOT NULL,
   expires_at DATETIME     NOT NULL,                 -- 보낸 뒤 10분, 확인하면 그때부터 30분
-  PRIMARY KEY (email)
+  PRIMARY KEY (email)                               -- 이메일당 한 행 (다시 보내면 덮어쓴다)
 ) ENGINE=InnoDB;
 
+-- 로그인 세션. 쿠키 sid 의 값이 token 이다. 만료된 행은 로그인할 때 청소한다 (src/api.c).
 CREATE TABLE sessions (
-  token      CHAR(48)     NOT NULL,
+  token      CHAR(48)     NOT NULL,                 -- 추측할 수 없는 난수 16진 48자
   user_id    INT UNSIGNED NOT NULL,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   expires_at DATETIME     NOT NULL,
   PRIMARY KEY (token),
   KEY ix_sessions_user (user_id),
-  KEY ix_sessions_expires (expires_at),
+  KEY ix_sessions_expires (expires_at),             -- 만료 세션 일괄 삭제를 빠르게
   CONSTRAINT fk_sessions_user
     FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- -------------------------------------------------------------------- 게시물
 
+-- 공모전 게시물. 관리자가 직접 쓰거나 학교 공지에서 자동으로 올라온다 (author_id 가 NULL 이고 source_url 이 있음).
 CREATE TABLE posts (
   id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
   author_id   INT UNSIGNED NULL,                  -- 작성자 탈퇴 시 NULL
   kind        ENUM('contest','hackathon','etc') NOT NULL DEFAULT 'contest',
   title       VARCHAR(200) NOT NULL,
-  body        TEXT         NOT NULL,
+  body        TEXT         NOT NULL,              -- TEXT: 최대 64KB
   source_url  VARCHAR(500) NULL,                  -- 원본 공지 링크
   host        VARCHAR(120) NULL,                  -- 주최 기관
   deadline    DATE         NULL,                  -- 모집 마감일
@@ -97,7 +118,7 @@ CREATE TABLE posts (
   view_count  INT UNSIGNED NOT NULL DEFAULT 0,
   created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY ix_posts_created (created_at),
+  KEY ix_posts_created (created_at),                -- 최신순 목록 정렬용
   KEY ix_posts_author (author_id),
   CONSTRAINT fk_posts_author
     FOREIGN KEY (author_id) REFERENCES users (id) ON DELETE SET NULL
@@ -107,14 +128,15 @@ CREATE TABLE posts (
 CREATE TABLE post_departments (
   post_id       INT UNSIGNED NOT NULL,
   department_id INT UNSIGNED NOT NULL,
-  PRIMARY KEY (post_id, department_id),
-  KEY ix_post_departments_dept (department_id),
+  PRIMARY KEY (post_id, department_id),             -- 복합 기본 키: 같은 (게시물, 학과) 쌍은 한 번만
+  KEY ix_post_departments_dept (department_id),     -- "이 학과 대상 게시물" 검색용 (기본 키는 post_id 가 앞이라)
   CONSTRAINT fk_pd_post
     FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE,
   CONSTRAINT fk_pd_department
     FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 공모전 게시물의 댓글. 게시물이 지워지면 함께 지워지고, 작성자가 탈퇴하면 author_id 만 NULL ("(탈퇴)" 로 표시).
 CREATE TABLE comments (
   id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
   post_id    INT UNSIGNED NOT NULL,
@@ -122,7 +144,7 @@ CREATE TABLE comments (
   body       VARCHAR(1000) NOT NULL,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY ix_comments_post (post_id, created_at),
+  KEY ix_comments_post (post_id, created_at),       -- "게시물의 댓글을 시간순으로" 질의에 딱 맞는 복합 색인
   CONSTRAINT fk_comments_post
     FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE,
   CONSTRAINT fk_comments_author
@@ -131,6 +153,7 @@ CREATE TABLE comments (
 
 -- ------------------------------------------------- 학교 홈페이지에서 수집한 공지
 
+-- 수집한 공지 원본 목록 (src/crawler.c). 같은 공지는 ext_id 로 한 행만 남는다.
 CREATE TABLE notices (
   id           INT UNSIGNED NOT NULL AUTO_INCREMENT,
   ext_id       INT UNSIGNED NOT NULL,             -- skuniv WP 글 번호
@@ -138,11 +161,11 @@ CREATE TABLE notices (
   title        VARCHAR(300) NOT NULL,
   url          VARCHAR(500) NOT NULL,
   published_at DATE         NOT NULL,
-  status       ENUM('pending','published','ignored') NOT NULL DEFAULT 'pending',
+  status       ENUM('pending','published','ignored') NOT NULL DEFAULT 'pending',   -- 대기 / 게시됨 / 숨김
   post_id      INT UNSIGNED NULL,                 -- 게시물로 올린 경우 연결
   fetched_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_notices_ext (ext_id),
+  UNIQUE KEY uq_notices_ext (ext_id),               -- ON DUPLICATE KEY UPDATE (upsert) 의 기준
   KEY ix_notices_status (status, published_at),
   CONSTRAINT fk_notices_post
     FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE SET NULL
@@ -157,7 +180,7 @@ CREATE TABLE post_ai (
   tags        VARCHAR(1000) NOT NULL DEFAULT '[]',  -- JSON 문자열 배열 (서버가 만든 값)
   host        VARCHAR(120)  NULL,
   deadline    DATE          NULL,
-  model       VARCHAR(60)   NOT NULL,
+  model       VARCHAR(60)   NOT NULL,               -- 분석에 쓴 모델 ID (나중에 모델을 바꿨을 때 구분)
   analyzed_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (post_id),
   CONSTRAINT fk_post_ai_post
@@ -171,7 +194,7 @@ CREATE TABLE post_ai_departments (
   score         TINYINT UNSIGNED NOT NULL,          -- 0 ~ 100
   reason        VARCHAR(400)     NOT NULL,
   PRIMARY KEY (post_id, department_id),
-  KEY ix_post_ai_dept (department_id, score),
+  KEY ix_post_ai_dept (department_id, score),       -- "이 학과에 점수 높은 글" 추천 질의용
   CONSTRAINT fk_pad_ai_post
     FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE,
   CONSTRAINT fk_pad_ai_department
@@ -181,8 +204,8 @@ CREATE TABLE post_ai_departments (
 -- 자체 추천 모델(src/ml.c)의 학과 프로필. 내용은 05_dept_profiles.sql 이 넣는다.
 CREATE TABLE dept_profiles (
   department_id INT UNSIGNED NOT NULL,
-  keywords      TEXT         NOT NULL,
-  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  keywords      TEXT         NOT NULL,              -- 학과를 설명하는 낱말들 (TF-IDF·임베딩의 출발 벡터)
+  updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,   -- 행이 바뀔 때마다 자동 갱신
   PRIMARY KEY (department_id),
   CONSTRAINT fk_dept_profiles_department
     FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE CASCADE
@@ -194,12 +217,13 @@ CREATE TABLE dept_profiles (
 CREATE TABLE interest_tags (
   id       INT UNSIGNED NOT NULL AUTO_INCREMENT,
   category ENUM('field','role','style') NOT NULL,   -- 관심 분야 / 맡고 싶은 역할 / 협업 성향
-  name     VARCHAR(30)  NOT NULL,
+  name     VARCHAR(30)  NOT NULL,                  -- 화면 표시 이름이자 추천 모델의 토큰
   sort     SMALLINT     NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   UNIQUE KEY uq_interest_tags_name (name)
 ) ENGINE=InnoDB;
 
+-- 회원이 고른 관심 키워드 (다대다 연결 표: 회원 N - 키워드 M)
 CREATE TABLE user_interests (
   user_id INT UNSIGNED NOT NULL,
   tag_id  INT UNSIGNED NOT NULL,
@@ -213,10 +237,10 @@ CREATE TABLE user_interests (
 CREATE TABLE recruits (
   id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
   author_id   INT UNSIGNED NOT NULL,
-  post_id     INT UNSIGNED NULL,
+  post_id     INT UNSIGNED NULL,                  -- 함께 나갈 공모전 (없으면 NULL, 공모전이 지워져도 모집글은 남음)
   title       VARCHAR(200) NOT NULL,
   body        TEXT         NOT NULL,
-  need_people SMALLINT     NOT NULL DEFAULT 1,
+  need_people SMALLINT     NOT NULL DEFAULT 1,    -- 구하는 인원 (1~20, 서버에서 검사)
   deadline    DATE         NULL,
   status      ENUM('open','closed') NOT NULL DEFAULT 'open',
   created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -227,6 +251,7 @@ CREATE TABLE recruits (
   CONSTRAINT fk_recruits_post   FOREIGN KEY (post_id)   REFERENCES posts (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
+-- 모집글이 찾는 키워드 (다대다)
 CREATE TABLE recruit_tags (
   recruit_id INT UNSIGNED NOT NULL,
   tag_id     INT UNSIGNED NOT NULL,
@@ -235,6 +260,7 @@ CREATE TABLE recruit_tags (
   CONSTRAINT fk_rt_tag     FOREIGN KEY (tag_id)     REFERENCES interest_tags (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 모집글 댓글 (공모전 댓글과 달리 학과 제한 없음)
 CREATE TABLE recruit_comments (
   id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
   recruit_id INT UNSIGNED  NOT NULL,
@@ -252,13 +278,167 @@ CREATE TABLE recruit_likes (
   recruit_id INT UNSIGNED NOT NULL,
   user_id    INT UNSIGNED NOT NULL,
   created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (recruit_id, user_id),
+  PRIMARY KEY (recruit_id, user_id),                -- 한 사람이 같은 글에 한 번만
   KEY ix_recruit_likes_user (user_id),
   CONSTRAINT fk_rl_recruit FOREIGN KEY (recruit_id) REFERENCES recruits (id) ON DELETE CASCADE,
   CONSTRAINT fk_rl_user    FOREIGN KEY (user_id)    REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+
+-- --------------------------------------------------------------------------------------------------------
+-- 그룹 스터디. 만든 사람(owner)이 방장으로 멤버 추가·역할(멘토·멘티) 지정·삭제를 한다.
+CREATE TABLE study_groups (
+  id          INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  owner_id    INT UNSIGNED  NOT NULL,                 -- 방장
+  name        VARCHAR(100)  NOT NULL,                 -- 스터디 이름
+  description VARCHAR(1000) NOT NULL DEFAULT '',
+  max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
+  department_id INT UNSIGNED NULL,                    -- 대상 학과 (NULL = 학과 무관). "내 학과 대상" 탭이 이 값으로 거른다
+  end_date    DATE          NULL,                    -- 종료일 (지나면 자동 삭제, NULL = 없음)
+  kind        ENUM('study','mentoring') NOT NULL DEFAULT 'study',  -- 늘 'study' (멘토링 메뉴는 없앴다. 예전 DB 와 맞추려고 남김)
+  created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_study_groups_owner (owner_id),
+  KEY ix_study_groups_department (department_id),
+  CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sg_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- 스터디 멤버와 역할 (member = 일반, mentor = 멘토, mentee = 멘티)
+CREATE TABLE study_members (
+  group_id  INT UNSIGNED NOT NULL,
+  user_id   INT UNSIGNED NOT NULL,
+  role      ENUM('member','mentor','mentee') NOT NULL DEFAULT 'member',
+  joined_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_id, user_id),                    -- 한 스터디에 한 번만
+  KEY ix_study_members_user (user_id),
+  CONSTRAINT fk_sm_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sm_user  FOREIGN KEY (user_id)  REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+-- ------------------------------------------------------------------------------------------------------------
+
+-- 전공책 장터: 판매 글(books), 책 사진(book_photos), 문의 댓글(book_comments)
+CREATE TABLE books (
+  id             INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  seller_id      INT UNSIGNED  NOT NULL,                -- 판매자
+  title          VARCHAR(200)  NOT NULL,                -- 책 제목
+  author         VARCHAR(100)  NOT NULL DEFAULT '',     -- 저자·출판사
+  course         VARCHAR(100)  NOT NULL DEFAULT '',     -- 쓰는 과목 이름
+  department_id  INT UNSIGNED  NULL,                    -- 관련 학과 (없으면 NULL)
+  price          INT UNSIGNED  NOT NULL DEFAULT 0,      -- 가격(원), 0 = 나눔
+  book_condition ENUM('new','good','fair','poor') NOT NULL DEFAULT 'good',  -- 새 책 / 깨끗함 / 필기 조금 / 필기 많음
+  description    VARCHAR(2000) NOT NULL DEFAULT '',
+  status         ENUM('selling','reserved','sold') NOT NULL DEFAULT 'selling',
+  sold_at        DATETIME      NULL,                    -- 판매 완료한 시각 (30일 뒤 자동 삭제)
+  created_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_books_status (status, created_at),
+  KEY ix_books_seller (seller_id),
+  KEY ix_books_department (department_id),
+  CONSTRAINT fk_books_seller     FOREIGN KEY (seller_id)     REFERENCES users (id)       ON DELETE CASCADE,
+  CONSTRAINT fk_books_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE book_photos (
+  id         INT UNSIGNED     NOT NULL AUTO_INCREMENT,
+  book_id    INT UNSIGNED     NOT NULL,
+  sort_order TINYINT UNSIGNED NOT NULL DEFAULT 0,       -- 0 이 대표 사진
+  mime       VARCHAR(20)      NOT NULL,                 -- image/jpeg, image/png, image/webp
+  data       MEDIUMBLOB       NOT NULL,                 -- 이미지 파일 내용 (최대 16MB, 서버는 1MB 까지만 받는다)
+  PRIMARY KEY (id),
+  KEY ix_book_photos_book (book_id, sort_order),
+  CONSTRAINT fk_bp_book FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE book_comments (
+  id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  book_id    INT UNSIGNED  NOT NULL,
+  author_id  INT UNSIGNED  NOT NULL,
+  body       VARCHAR(1000) NOT NULL,
+  created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_book_comments (book_id, created_at),
+  CONSTRAINT fk_bc_book   FOREIGN KEY (book_id)   REFERENCES books (id) ON DELETE CASCADE,
+  CONSTRAINT fk_bc_author FOREIGN KEY (author_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 참여 권유: 모집글 작성자·스터디 방장이 [팀원 찾기] 에서 회원에게 보낸 권유 메일 기록 (같은 모임·같은 회원은 한 번만)
+CREATE TABLE invitations (
+  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  target_kind ENUM('recruit','study') NOT NULL,          -- recruit = 팀원 모집글, study = 그룹 스터디
+  target_id   INT UNSIGNED NOT NULL,                     -- recruits.id 또는 study_groups.id
+  inviter_id  INT UNSIGNED NOT NULL,                     -- 권유한 회원 (작성자·방장)
+  invitee_id  INT UNSIGNED NOT NULL,                     -- 권유받은 회원
+  accepted_at DATETIME     NULL,                         -- 알림함에서 [참여하기] 를 누른 시각 (NULL = 아직)
+  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_invitations (target_kind, target_id, invitee_id),
+  KEY ix_invitations_inviter (inviter_id, created_at),
+  CONSTRAINT fk_inv_inviter FOREIGN KEY (inviter_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_inv_invitee FOREIGN KEY (invitee_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 알림함: 회원에게 온 알림 (참여 권유 등). read_at 이 NULL 이면 안 읽음
+CREATE TABLE notifications (
+  id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  user_id    INT UNSIGNED  NOT NULL,                   -- 받는 회원
+  actor_id   INT UNSIGNED  NULL,                       -- 알림을 일으킨 회원 (탈퇴하면 NULL)
+  kind       VARCHAR(20)   NOT NULL,                   -- 종류 (invite = 참여 권유)
+  title      VARCHAR(300)  NOT NULL,                   -- 한 줄 제목
+  body       VARCHAR(1000) NOT NULL DEFAULT '',        -- 내용
+  link       VARCHAR(200)  NOT NULL DEFAULT '',        -- 누르면 갈 화면 주소 (#/recruits/3 처럼, 없으면 '')
+  read_at    DATETIME      NULL,                       -- 읽은 시각 (NULL = 안 읽음)
+  created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_notifications_user (user_id, read_at, created_at),
+  CONSTRAINT fk_noti_user  FOREIGN KEY (user_id)  REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_noti_actor FOREIGN KEY (actor_id) REFERENCES users (id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+
+-- 모집글 팀: 작성자가 [팀원으로 받기] 한 회원 (작성자 자신은 넣지 않는다). 팀 채팅방에 들어갈 수 있다
+CREATE TABLE recruit_members (
+  recruit_id INT UNSIGNED NOT NULL,
+  user_id    INT UNSIGNED NOT NULL,
+  joined_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (recruit_id, user_id),                 -- 한 팀에 한 번만
+  KEY ix_recruit_members_user (user_id),
+  CONSTRAINT fk_rm_recruit FOREIGN KEY (recruit_id) REFERENCES recruits (id) ON DELETE CASCADE,
+  CONSTRAINT fk_rm_user    FOREIGN KEY (user_id)    REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 채팅방 메시지: 방 = 모집글 팀(recruit) 또는 그룹 스터디(study). 방이 지워지면 자동 정리(cleanup.c)가 지운다
+CREATE TABLE chat_messages (
+  id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  room_kind  ENUM('recruit','study') NOT NULL,         -- recruit = 모집글 팀, study = 그룹 스터디
+  room_id    INT UNSIGNED  NOT NULL,                   -- recruits.id 또는 study_groups.id
+  user_id    INT UNSIGNED  NOT NULL,                   -- 쓴 회원
+  body       VARCHAR(1000) NOT NULL,
+  created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY ix_chat_messages_room (room_kind, room_id, id),
+  CONSTRAINT fk_cm_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 채팅방 읽음 표시: (방, 회원) 이 마지막으로 읽은 메시지 id (안 읽은 수 = 이보다 큰 남의 메시지 수)
+CREATE TABLE chat_reads (
+  room_kind    ENUM('recruit','study') NOT NULL,
+  room_id      INT UNSIGNED NOT NULL,
+  user_id      INT UNSIGNED NOT NULL,
+  last_read_id INT UNSIGNED NOT NULL DEFAULT 0,       -- 이 id 까지 읽었다
+  PRIMARY KEY (room_kind, room_id, user_id),
+  KEY ix_chat_reads_user (user_id),
+  CONSTRAINT fk_cr_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
 -- 마지막 수집 시각 등 서버 설정값
+-- 키-값(k-v) 형태라 설정이 늘어도 표 구조를 바꿀 필요가 없다.
+--   crawl.window_days : 공지 수집 기간(일), crawl.fetched_at : 마지막 수집 시각
 CREATE TABLE app_config (
   k VARCHAR(40)  NOT NULL,
   v VARCHAR(200) NOT NULL,
@@ -266,6 +446,8 @@ CREATE TABLE app_config (
 ) ENGINE=InnoDB;
 
 -- 게시물 목록에서 자주 쓰는 집계를 미리 묶어둔 뷰
+-- 뷰(VIEW)는 저장된 SELECT 문이다. 데이터를 따로 저장하지 않고, 조회할 때마다 아래 질의가 실행된다.
+-- (현재 C 서버는 이 뷰 대신 직접 질의를 쓰며, Workbench 에서 확인할 때 편리하다)
 CREATE OR REPLACE VIEW post_list AS
 SELECT p.id, p.kind, p.title, p.host, p.deadline, p.need_people,
        p.view_count, p.created_at, p.source_url,

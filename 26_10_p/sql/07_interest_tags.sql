@@ -1,6 +1,8 @@
 -- 가입할 때 고르는 관심 키워드. 다시 돌려도 된다 (이름이 같으면 순서만 고친다).
 USE sku_contest;
 
+-- (분류, 이름, 표시 순서). 분류마다 sort 를 1~, 31~, 41~ 로 띄워 두어 나중에 끼워 넣기 쉽게 했다.
+-- 이름이 유일 키라 같은 이름이 있으면 INSERT 대신 분류·순서만 갱신한다 (id 가 유지되어 회원 선택이 보존됨).
 INSERT INTO interest_tags (category, name, sort) VALUES
   -- 관심 분야
   ('field', '영상',          1), ('field', '디자인',        2), ('field', '개발',          3),

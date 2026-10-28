@@ -6,6 +6,7 @@
 
 USE sku_contest;
 
+-- IF NOT EXISTS: 이미 있으면 건너뛴다 → 여러 번 돌려도 안전 (내용은 01_schema.sql 의 같은 표와 동일)
 CREATE TABLE IF NOT EXISTS post_ai (
   post_id     INT UNSIGNED  NOT NULL,
   summary     VARCHAR(1000) NOT NULL,

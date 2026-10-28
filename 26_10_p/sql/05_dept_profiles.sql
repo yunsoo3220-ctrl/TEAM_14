@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS dept_profiles (
     FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 학과 이름 → 키워드 대응표를 UNION ALL 로 만든 임시 표(p)와 departments 를 이름으로 조인해,
+-- 학과 id 를 몰라도 이름만으로 프로필을 넣는다. 이미 있으면 keywords 를 덮어쓴다.
+-- 키워드는 공백으로 구분하며, 모델이 토큰화할 때 낱말 단위로 쪼갠다 (src/ml.c 의 tokenize).
 INSERT INTO dept_profiles (department_id, keywords)
 SELECT d.id, p.keywords
 FROM departments d
@@ -36,6 +39,10 @@ JOIN (
          '금융 핀테크 투자 증권 은행 보험 자산 재무 회계 블록체인 가상자산 데이터분석 통계 금융데이터 리스크 금융공학 경제 금융교육 금융감독 신용 결제 디지털금융 금융상품 계량 모델링'
   UNION ALL SELECT '전자컴퓨터공학과',
          '전자 전기 컴퓨터 하드웨어 반도체 회로 임베디드 사물인터넷 IoT 센서 로봇 드론 자율주행 통신 네트워크 신호처리 제어 인공지능 AI 스마트시티 디지털 에너지 전력 프로그래밍 디지털혁신'
+  UNION ALL SELECT '컴퓨터공학과',
+         '컴퓨터 소프트웨어 프로그래밍 코딩 개발 알고리즘 자료구조 운영체제 시스템 컴퓨터구조 네트워크 클라우드 서버 보안 정보보호 해킹 인공지능 AI 머신러닝 딥러닝 데이터 빅데이터 데이터분석 앱 웹 게임 해커톤 IT 디지털 오픈소스'
+  UNION ALL SELECT '전자공학과',
+         '전자 전기 회로 반도체 하드웨어 임베디드 마이크로프로세서 아두이노 사물인터넷 IoT 센서 로봇 드론 자율주행 통신 무선 5G 네트워크 신호처리 제어 전력 에너지 배터리 디스플레이 스마트시티 스마트팩토리 메이커 시제품'
   UNION ALL SELECT '나노화학생명공학과',
          '화학 생명 바이오 나노 신소재 소재 의약 제약 식품 식품의약품 화장품 환경 에너지 실험 연구 과학 과학기술 탄소중립 친환경 보건 의료 헬스케어 마약 독성 안전성 논문'
   UNION ALL SELECT '물류시스템공학과',
@@ -74,5 +81,5 @@ JOIN (
          '스포츠 체육 운동 건강 헬스케어 웨어러블 스포츠데이터 피트니스 재활 레저 e스포츠 경기 트레이닝 웰니스 안전'
   UNION ALL SELECT '자유전공학부',
          '아이디어 기획 창의 융합 사회문제 문제해결 탐구 에세이 논문 체험수기 수기 글쓰기 인문 인문가치 토론 진로 스터디 학습 리더십'
-) p ON p.name = d.name
+) p ON p.name = d.name                    -- 이름이 DB 의 학과 이름과 정확히 같아야 들어간다
 ON DUPLICATE KEY UPDATE keywords = VALUES(keywords);

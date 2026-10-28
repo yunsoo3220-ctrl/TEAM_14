@@ -8,10 +8,14 @@
 
 USE sku_contest;
 
+-- ALTER TABLE ... ADD COLUMN: 기존 표에 열을 추가한다. AFTER name 은 name 열 바로 뒤에 놓으라는 뜻.
+-- 기존 행은 DEFAULT '' 로 채워진다.
 ALTER TABLE users
   ADD COLUMN phone VARCHAR(20) NOT NULL DEFAULT '' AFTER name;
 
 -- 유일 키가 없을 수도 있으므로 있을 때만 지운다.
+-- MySQL 의 DROP INDEX 에는 IF EXISTS 가 없어서, information_schema(DB 의 메타 정보)로 존재 여부를 세고
+-- 실행할 문장을 문자열로 고른 뒤 PREPARE/EXECUTE 로 동적 실행한다. 'DO 0' 은 아무 일도 안 하는 문장이다.
 SET @has := (SELECT COUNT(*) FROM information_schema.STATISTICS
              WHERE TABLE_SCHEMA = 'sku_contest'
                AND TABLE_NAME = 'users'
