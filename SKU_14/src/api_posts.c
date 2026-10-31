@@ -23,6 +23,7 @@
 #include <string.h>
 
 #define COMMENT_MAX_LEN 1000   /* 댓글 최대 길이 (바이트) */
+#define MINE_MAX        200    /* "내 학과 대상" 에서 추천 모델로 고르는 글 최대 개수 (목록 최대 개수와 같다) */
 
 /* 게시물에 체크된 학과 수. 0 이면 대상 학과를 지정하지 않은 글이다. */
 static int post_department_count(unsigned post_id)
@@ -53,6 +54,13 @@ static int department_allowed(unsigned post_id, unsigned department_id)
     n = db_scalar(sql.data, 0);
     buf_free(&sql);
     return n > 0;
+}
+
+/* 대상 학과 제한을 통과하는지: 대상 학과가 없는 글이면 누구나, 있으면 그 학과 소속만 1.
+ * 댓글뿐 아니라 공모전에 연결된 팀원 모집(글쓰기·팀원 받기·참여 권유)에서도 쓴다. api.h 참고 */
+int post_department_ok(unsigned post_id, unsigned department_id)
+{
+    return post_department_count(post_id) == 0 || department_allowed(post_id, department_id);
 }
 
 /* 댓글 가능 여부와 사유를 함께 돌려준다. reason 은 정적 문자열.
@@ -140,11 +148,26 @@ static void handle_post_list(Request *req, Response *res)
                       "WHERE pd.post_id = p.id AND pd.department_id = %u)",
                 (unsigned)strtoul(dept, NULL, 10));
 
-    /* 내 학과가 댓글을 쓸 수 있는 게시물만 */
-    if (only_mine[0] == '1' && u.department_id)
-        db_sqlf(&sql, " AND EXISTS (SELECT 1 FROM post_departments pd "
+    /* 내 학과 대상: 대상 학과로 내 학과가 체크된 글
+     * + 대상 학과가 없는(누구나 참여 가능한) 글 가운데 추천 모델이 내 학과와 관련 있다고 본 글
+     *   (학교 공지에서 모은 글은 대상 학과가 비어 있어서, 체크된 글만 고르면 거의 비어 버린다.
+     *    "학과별 추천" 탭과 같은 기준 ML_MIN_SCORE 를 쓴다) */
+    if (only_mine[0] == '1' && u.department_id) {
+        MlHit hits[MINE_MAX];
+        int n = ml_rank_posts(u.department_id, ML_MIN_SCORE, hits, MINE_MAX, NULL), i;
+
+        db_sqlf(&sql, " AND (EXISTS (SELECT 1 FROM post_departments pd "
                       "WHERE pd.post_id = p.id AND pd.department_id = %u)",
                 u.department_id);
+        if (n > 0) {
+            buf_puts(&sql, " OR (NOT EXISTS (SELECT 1 FROM post_departments pd WHERE pd.post_id = p.id)"
+                           " AND p.id IN (");
+            for (i = 0; i < n; i++)
+                db_sqlf(&sql, i ? ",%u" : "%u", hits[i].id);
+            buf_puts(&sql, "))");
+        }
+        buf_putc(&sql, ')');
+    }
 
     /* 종류 필터는 허용 목록(화이트리스트)에 있는 값만 받는다 */
     if (strcmp(kind, "contest") == 0 || strcmp(kind, "hackathon") == 0 ||

@@ -158,6 +158,14 @@ static void handle_invite(Request *req, Response *res)
         res_error(res, 400, "bad_user", "이미 함께하고 있는 회원입니다.");
         return;
     }
+    if (!strcmp(t.kind, "recruit") && !recruit_department_ok(t.id, uid)) {
+        res_error(res, 403, "department_not_allowed", "이 공모전의 대상 학과가 아닌 회원에게는 참여를 권유할 수 없습니다.");
+        return;
+    }
+    if (!strcmp(t.kind, "study") && !study_department_ok(t.id, uid)) {
+        res_error(res, 403, "department_not_allowed", "이 스터디의 대상 학과가 아닌 회원에게는 참여를 권유할 수 없습니다.");
+        return;
+    }
     if (invite_sent(&t, uid)) {
         res_error(res, 409, "already_invited", "이미 참여를 권유한 회원입니다.");
         return;
@@ -358,6 +366,10 @@ static void handle_accept(Request *req, Response *res, unsigned nid)
         res_error(res, 400, "closed", "모집을 마감한 글입니다.");
         return;
     }
+    if (strcmp(t.kind, "recruit") == 0 && !recruit_department_ok(t.id, u.id)) {
+        res_error(res, 403, "department_not_allowed", "이 공모전의 대상 학과가 아니어서 참여할 수 없습니다.");
+        return;
+    }
 
     /* 수락 표시 (아직일 때만) */
     buf_init(&sql);
@@ -384,7 +396,7 @@ static void handle_accept(Request *req, Response *res, unsigned nid)
     } else {
         buf_init(&sql);
         db_sqlf(&sql, "INSERT INTO recruit_comments (recruit_id, author_id, body) VALUES (%u, %u, %Q)",
-                t.id, u.id, "✋ 참여 권유를 받고 함께하고 싶어 참여합니다! 연락 방법을 알려 주세요.");
+                t.id, u.id, "참여 권유를 받고 함께하고 싶어 참여합니다! 연락 방법을 알려 주세요.");
         ok = db_exec_buf(&sql) && recruit_team_add(t.id, u.id);
         buf_free(&sql);
         if (!ok)

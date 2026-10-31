@@ -101,6 +101,13 @@ int  invite_member_already(const InviteTarget *t, unsigned user_id);
 /* 이 대상에서 user_id 에게 이미 권유를 보냈으면 1 */
 int  invite_sent(const InviteTarget *t, unsigned user_id);
 
+/* 게시물(공모전)의 대상 학과 제한을 department_id 가 통과하면 1 (대상 학과 미지정 글은 누구나). api_posts.c */
+int  post_department_ok(unsigned post_id, unsigned department_id);
+/* 학생 표시 이름: 가운데를 가린 이름 + "_" + 학번 셋째·넷째 숫자 (손동권, 20241234 -> 손*권_24). api.c */
+void display_name_for(const char *name, const char *student_no, Buf *out);
+/* rid 모집글이 공모전에 연결돼 있으면, uid 회원의 학과가 그 공모전의 대상 학과인지. 통과 1. api_community.c */
+int  recruit_department_ok(unsigned rid, unsigned uid);
+
 /* rid 모집글 팀에 uid 회원을 넣는다 (작성자·이미 팀원이면 아무 일도 하지 않고 성공). 성공 1. api_community.c */
 int  recruit_team_add(unsigned rid, unsigned uid);
 
@@ -108,7 +115,10 @@ int  recruit_team_add(unsigned rid, unsigned uid);
 long long chat_unread_total(unsigned user_id);
 
 /* gid 스터디에 uid 회원을 role 로 넣는다 (정원 검사 포함). 성공 1, 실패하면 응답을 채우고 0. api_study.c */
+/* 대상 학과 제한도 검사한다 (대상 학과가 정해진 스터디는 그 학과 학생만) */
 int  study_add_member(Response *res, unsigned gid, unsigned uid, const char *role);
+/* uid 회원이 gid 스터디의 대상 학과 제한을 통과하면 1 (대상 학과가 없는 스터디는 누구나). api_study.c */
+int  study_department_ok(unsigned gid, unsigned uid);
 
 /* 알림함의 참여 권유 알림(link)이 지금 어떤 상태인지 (api_invite.c).
  *   "open" 참여할 수 있음, "accepted" 이미 수락함, "member" 이미 멤버, "closed" 마감·정원 참, "gone" 글이 없음 */

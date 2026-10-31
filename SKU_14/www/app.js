@@ -130,27 +130,18 @@ function formValues(form) {
   return out;
 }
 
-/* 게시판 표시 이름. 서버의 make_display_name() 과 같은 규칙이라 미리보기에 쓴다.
+/* 게시판 표시 이름. 서버의 display_name_for() 와 같은 규칙이라 미리보기에 쓴다.
  * 실제로 저장되는 값은 언제나 서버가 만든 것이다.
- *   손동권 + 010-9948-9687 -> 손*권_9948 */
-function displayName(name, phone) {
+ *   손동권 + 학번 20241234 -> 손*권_24 (이름 가운데는 *, 학번 앞에서 셋째·넷째 숫자) */
+function displayName(name, studentNo) {
   /* [...문자열] 은 글자 단위로 쪼갠다 (한글·이모지도 한 글자씩) */
   const chars = [...(name || '').trim()];
-  const digits = (phone || '').replace(/\D/g, '');   /* 숫자가 아닌 것(\D)을 모두 지움 */
-
-  let middle = '';
-  if (digits.length === 11) middle = digits.slice(3, 7);
-  else if (digits.length === 10) middle = digits.slice(3, 6);
-  else return '';
-
-  if (!chars.length) return '';
-  if (chars.length === 1) return `${chars[0]}_${middle}`;
-
-  const masked = chars.length === 2
-    ? `${chars[0]}*`
+  const no = (studentNo || '').trim();
+  if (!chars.length || !/^\d{4,}$/.test(no)) return '';
+  const masked = chars.length === 1 ? chars[0]
+    : chars.length === 2 ? `${chars[0]}*`
     : chars[0] + '*'.repeat(chars.length - 2) + chars[chars.length - 1];
-
-  return `${masked}_${middle}`;
+  return `${masked}_${no.slice(2, 4)}`;
 }
 
 /* 'YYYY-MM-DD' 마감일까지 남은 날 수 (그날 23:59:59 기준). 날짜가 이상하면 null.
@@ -227,10 +218,10 @@ function subTabs(nav, items, current) {
 /* 사이드바를 줄이면서 화면 안의 탭으로 옮긴 메뉴들 (예전의 "내 학과 대상", "학과별 추천", "팀원 모집") */
 const POST_TABS    = [['#/posts', 'all', '전체 공모전'], ['#/mine', 'mine', '내 학과 대상'], ['#/reco', 'reco', '학과별 추천']];
 const STUDY_TABS   = [['#/studies', 'all', '전체 스터디'], ['#/studies/major', 'major', '내 학과 대상'],
-                      ['#/studies/reco', 'reco', '학과별 추천']];
-const BOOK_TABS    = [['#/books', 'all', '전체 책'], ['#/books/major', 'major', '내 학과 대상'], ['#/books/reco', 'reco', '학과별 추천']];
-const RECRUIT_TABS = [['#/recruits', 'mine', '내가 쓴 모집글'], ['#/recruits/joined', 'joined', '참여 중인 팀'],
-                      ['#/recruits/all', 'all', '모집글 둘러보기']];
+                      ['#/studies/reco', 'reco', '학과별 추천'], ['#/studies/confirmed', 'confirmed', '확정된 그룹']];
+const BOOK_TABS    = [['#/books', 'all', '전체 책'], ['#/books/major', 'major', '내 학과 대상'], ['#/books/reco', 'reco', '학과별 추천'],
+                      ['#/books/mine', 'mine', '내 판매 글']];
+const RECRUIT_TABS = [['#/recruits', 'mine', '내가 쓴 모집글'], ['#/recruits/joined', 'joined', '참여 중인 팀']];
 
 /* 학과 번호 → 이름 (state.colleges 에서 찾는다, 없으면 '') */
 function deptName(id) {
@@ -301,7 +292,7 @@ function paintSuspend() {
   const me = state.me;
   box.hidden = !(me && me.suspended_until);
   if (box.hidden) return;
-  box.replaceChildren(`⛔ 계정이 ${me.suspended_until} 까지 정지되었습니다. 글은 볼 수 있지만 글쓰기·댓글·참여는 할 수 없습니다.`,
+  box.replaceChildren(`계정이 ${me.suspended_until} 까지 정지되었습니다. 글은 볼 수 있지만 글쓰기·댓글·참여는 할 수 없습니다.`,
                       el('small', null, `사유: ${me.suspend_reason || '-'}`));
 }
 
@@ -847,7 +838,10 @@ async function viewDetail(id) {
     const box = root.querySelector('[data-recruits]');
     root.querySelector('[data-recruit-count]').textContent = `(${recs.length})`;
     /* 모집글 쓰기 링크: 로그인했으면 이 공모전이 미리 연결된 글쓰기 화면으로 */
-    root.querySelector('[data-recruit-new]').href = state.me ? `#/recruits/new/${post.id}` : '#/login';
+    const newLink = root.querySelector('[data-recruit-new]');
+    newLink.href = state.me ? `#/recruits/new/${post.id}` : '#/login';
+    /* 대상 학과가 아니면 이 공모전으로 팀을 꾸릴 수 없다 (서버도 막는다: api_community.c) */
+    if (state.me && !permission.can_comment) newLink.hidden = true;
     box.replaceChildren(...(recs.length ? recs.map(r => {
       const a = el('a', 'mini-row');
       a.href = `#/recruits/${r.id}`;
@@ -860,8 +854,26 @@ async function viewDetail(id) {
 
   render(node);
 
-  if (state.me && state.me.is_admin)
+  if (state.me && state.me.is_admin) {
+    const article = root.querySelector('article.post');
+    mountPostEditor(article, post, reloadDetail);
     mountDeptEditor(root.querySelector('.depts'), post, reloadDetail);
+    /* 공모전 삭제 (관리자). 댓글·AI 분석은 함께 지워지고, 이 공모전으로 쓴 팀원 모집글은 연결만 풀린 채 남는다 */
+    const delRow = el('div', 'row owner-actions');
+    const del = el('button', 'ghost small danger', '공모전 삭제');
+    del.onclick = async () => {
+      if (!(await askConfirm(`"${post.title}" 을(를) 지울까요? 댓글도 함께 지워지고 되돌릴 수 없습니다. ` +
+                             '이 공모전으로 쓴 팀원 모집글은 연결만 풀린 채 남습니다.'))) return;
+      del.disabled = true;
+      try {
+        await api(`/api/posts/${post.id}`, { method: 'DELETE' });
+        toast('공모전을 지웠습니다.');
+        location.hash = '#/posts';
+      } catch (e) { toast(e.message); del.disabled = false; }
+    };
+    delRow.append(del);
+    article.append(delRow);
+  }
 
   /* 댓글 */
   const listEl = root.querySelector('[data-comments]');
@@ -1035,9 +1047,10 @@ function viewAuth(register = false) {
   const phoneOf = () => phoneEls.map(p => p.value.trim()).join('-');
   const refreshPreview = () => {
     const v = formValues(reg);
-    preview.textContent = displayName(v.name, phoneOf()) || '···';
+    preview.textContent = displayName(v.name, v.student_no) || '···';
   };
   reg.querySelector('[name="name"]').oninput = refreshPreview;    /* 한 글자 입력할 때마다 */
+  reg.querySelector('[name="student_no"]').addEventListener('input', refreshPreview);
   /* 전화번호 칸: 숫자만 남기고, 칸이 차면 다음 칸으로 넘어간다 */
   phoneEls.forEach((p, i) => {
     p.oninput = () => {
@@ -1290,6 +1303,49 @@ function mountDeptEditor(container, post, onSaved) {
   row.append(save, clear, el('span', 'muted', '체크를 모두 풀면 누구나 댓글을 쓸 수 있습니다.'));
   details.append(row);
   container.append(details);
+}
+
+/* 게시물 상세에 붙는 관리자용 게시물 수정 상자 (제목·종류·주최·마감일·인원·링크·내용).
+ * 지금 값을 미리 채우고, 저장하면 onSaved 로 화면을 다시 그린다 */
+function mountPostEditor(container, post, onSaved) {
+  const node = tpl('tpl-post-edit');
+  const form = node.querySelector('[data-form]');
+  const f = form.elements;
+  f.title.value = post.title;
+  f.kind.value = post.kind;
+  f.host.value = post.host || '';
+  f.deadline.value = post.deadline || '';
+  f.need_people.value = post.need_people || 0;
+  f.source_url.value = post.source_url || '';
+  f.body.value = post.body;
+  /* 마감일은 오늘부터 (서버도 막는다). 원래 마감일이 이미 지났으면 그 날짜는 그대로 둘 수 있다 */
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  f.deadline.min = post.deadline && post.deadline < today ? post.deadline : today;
+  f.deadline.addEventListener('click', ev => { try { ev.currentTarget.showPicker(); } catch (e) {} });
+
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const v = formValues(form);
+    const btn = form.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await api(`/api/posts/${post.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          title: v.title, body: v.body, kind: v.kind, host: v.host || null,
+          source_url: v.source_url || null, deadline: v.deadline || null,
+          need_people: Number(v.need_people || 0),
+        }),
+      });
+      toast('게시물을 고쳤습니다.');
+      onSaved();
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false;
+    }
+  };
+  container.append(node);
 }
 
 /* 수집한 공지 한 줄 (관리자 화면). 대기 중이면 학과 체크박스와 [게시물로 등록]/[숨기기] 버튼 */
@@ -1593,6 +1649,10 @@ async function viewAdmin() {
   const checksEl = root.querySelector('[data-dept-checks]');
   deptChecks(checksEl, 'new-');
   const predict = mountPredict(root.querySelector('[data-predict]'), form, checksEl, 'new-');
+  const now = new Date();   /* 마감일은 오늘부터 고를 수 있다 (서버도 지난 날짜를 막는다) */
+  form.elements.deadline.min = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  /* 아이콘뿐 아니라 칸 어디를 눌러도 달력이 펼쳐지게 */
+  form.elements.deadline.addEventListener('click', ev => { try { ev.currentTarget.showPicker(); } catch (e) {} });
 
   form.onsubmit = async ev => {
     ev.preventDefault();
@@ -1757,10 +1817,12 @@ function recruitCard(r) {
   const dd = r.status === 'open' ? ddayTag(r.deadline) : null;
   if (dd) tags.append(dd);
   top.append(tags);
-  if (typeof r.match === 'number' && r.match > 0) top.append(scoreRing(r.match));
+  /* 나와 맞는 정도 (내가 쓴 글에는 의미가 없어 보이지 않는다) */
+  const mine = state.me && r.author_id === state.me.id;
+  if (!mine && typeof r.match === 'number' && r.match > 0) top.append(scoreRing(r.match));
 
   a.append(top, el('h3', null, r.title));
-  if (r.post_title) a.append(el('p', 'recruit-post', `🏆 ${r.post_title}`));   /* 연결된 공모전 */
+  if (r.post_title) a.append(el('p', 'recruit-post', `공모전: ${r.post_title}`));   /* 연결된 공모전 */
   a.append(el('p', 'item-summary excerpt', r.excerpt));
   if (r.tags.length) {
     const want = el('div', 'tag-list');
@@ -1793,6 +1855,16 @@ function myRecruitCard(r, reload) {
   const tools = el('div', 'foot-tools');
   if (r.status === 'open')
     tools.append(button('팀원 찾기', 'small', () => { location.hash = `#/people/recruit/${r.id}`; }));
+  tools.append(button('수정', 'ghost small', () => { location.hash = `#/recruits/${r.id}/edit`; }));
+  tools.append(button('삭제', 'ghost small danger', async b => {
+    if (!(await askConfirm(`"${r.title}" 모집글을 지울까요? 댓글도 함께 지워집니다.`))) return;
+    b.disabled = true;
+    try {
+      await api(`/api/recruits/${r.id}`, { method: 'DELETE' });
+      toast('지웠습니다.');
+      reload();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  }));
   tools.append(button(r.status === 'open' ? '모집 마감' : '다시 모집', 'ghost small', async b => {
     b.disabled = true;
     try {
@@ -1803,7 +1875,7 @@ function myRecruitCard(r, reload) {
     } catch (e) { toast(e.message); b.disabled = false; }
   }));
   const bar = el('div', 'manage-bar');
-  bar.append(el('span', 'muted small', `👥 팀 ${r.team_count}명 (글쓴이 포함)`), tools);
+  bar.append(el('span', 'muted small', `팀 ${r.team_count}명 (글쓴이 포함)`), tools);
   a.append(bar);
   return a;
 }
@@ -1811,28 +1883,61 @@ function myRecruitCard(r, reload) {
 /* 내 모집 관리 탭마다 제목 · 설명 · 비었을 때 문구 */
 const RECRUIT_TAB_TEXT = {
   mine:   { heading: '내가 쓴 모집글',
-            sub: '댓글을 남긴 회원을 팀원으로 받고, 모집을 마감하거나 다시 열 수 있습니다. 공모전 화면의 [이 공모전으로 팀원 모집] 으로도 쓸 수 있습니다.',
-            empty: '아직 쓴 모집글이 없습니다. 함께 나갈 공모전을 골라 첫 모집글을 써 보세요.' },
+            sub: '내가 쓴 팀원 모집글과 내가 방장인 그룹 스터디입니다. 댓글을 남긴 회원을 팀원으로 받고, 모집을 마감하거나 다시 열 수 있습니다. 스터디는 멤버를 관리하거나 지울 수 있습니다.',
+            empty: '아직 쓴 모집글이나 만든 스터디가 없습니다. 함께 나갈 공모전을 골라 첫 모집글을 써 보세요.' },
   joined: { heading: '참여 중인 팀',
-            sub: '글쓴이가 팀원으로 받아 준 모집글입니다. 팀 채팅방으로 바로 갈 수 있습니다.',
-            empty: '아직 참여 중인 팀이 없습니다. 모집글 둘러보기에서 마음에 드는 팀에 댓글을 남겨 보세요.' },
-  all:    { heading: '모집글 둘러보기',
+            sub: '글쓴이가 팀원으로 받아 준 모집글과 내가 멤버로 있는 그룹 스터디입니다. 채팅방으로 바로 갈 수 있습니다.',
+            empty: '아직 참여 중인 팀이나 스터디가 없습니다. 공모전 모집에서 마음에 드는 팀에 댓글을 남겨 보세요.' },
+  all:    { heading: '공모전 모집',
             sub: '다른 회원이 올린 모집글입니다. 댓글로 참여 의사를 남기면 글쓴이가 팀원으로 받아 줍니다.',
             empty: '조건에 맞는 모집글이 없습니다. 첫 모집글을 써 보세요.' },
 };
 
-/* #/recruits (내가 쓴 모집글), #/recruits/joined (참여 중인 팀), #/recruits/all (모집글 둘러보기)
- * 앞의 두 탭은 /api/recruits?mine=1 (내가 쓰거나 팀원인 글, 마감한 글도) 을 글쓴이 여부로 나눈다.
+/* 내가 방장인 스터디 카드 (내 모집 관리): 목록 카드 아래에 인원과 관리 버튼(팀원 찾기 · 멤버 관리 · 삭제)을 붙인다.
+ * 버튼은 myRecruitCard 와 같은 방식으로 카드 링크로 넘어가지 않게 막는다 */
+function myStudyCard(s, reload) {
+  const a = studyCard(s);
+  const button = (text, cls, onClick) => {
+    const b = el('button', cls, text);
+    b.type = 'button';
+    b.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); onClick(b); };
+    return b;
+  };
+  const tools = el('div', 'foot-tools');
+  if (!s.confirmed_at && s.member_count < s.max_members)
+    tools.append(button('팀원 찾기', 'small', () => { location.hash = `#/people/study/${s.id}`; }));
+  tools.append(button('멤버 관리', 'ghost small', () => { location.hash = `#/${STUDY.path}/${s.id}`; }));
+  tools.append(button('수정', 'ghost small', () => { location.hash = `#/${STUDY.path}/${s.id}/edit`; }));
+  tools.append(button('삭제', 'ghost small danger', async b => {
+    if (!(await askConfirm(`"${s.name}" ${STUDY.eul} 지울까요? 멤버 목록도 함께 지워집니다.`))) return;
+    b.disabled = true;
+    try {
+      await api(`/api/studies/${s.id}`, { method: 'DELETE' });
+      toast('지웠습니다.');
+      reload();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  }));
+  const bar = el('div', 'manage-bar');
+  bar.append(el('span', 'muted small', `${s.member_count} / ${s.max_members}명`), tools);
+  a.append(bar);
+  return a;
+}
+
+/* #/recruits (내가 쓴 모집글), #/recruits/joined (참여 중인 팀) - 사이드바 "내 모집 관리"
+ * #/recruits/all (다른 회원의 모집글 둘러보기) - 사이드바 "공모전 모집" (탭 없이 따로)
+ * 앞의 두 탭은 /api/recruits?mine=1 (내가 쓰거나 팀원인 글, 마감한 글도) 과 /api/studies?mine=1 (내가 속한 스터디) 을
+ * 글쓴이·방장 여부로 나눈다.
  * 둘러보기 탭만 키워드·상태 필터와 최신순/나와 맞는 순 정렬이 있다. */
 async function viewRecruits(tab = 'mine') {
-  markNav('recruits');
-  setPageTitle('내 모집 관리');
+  markNav(tab === 'all' ? 'recruit-browse' : 'recruits');
+  setPageTitle(tab === 'all' ? '공모전 모집' : '내 모집 관리');
   if (tab !== 'all' && !state.me)
     return renderTabNote(RECRUIT_TABS, tab, loginNote('로그인하면 내가 쓴 모집글과 참여 중인 팀을 관리할 수 있습니다.'));
 
   const node = tpl('tpl-recruits');
   const root = node.firstElementChild;
-  subTabs(root.querySelector('[data-tabs]'), RECRUIT_TABS, tab);
+  if (tab === 'all') root.querySelector('[data-tabs]').remove();   /* 공모전 모집은 내 모집 관리의 탭이 아니다 */
+  else subTabs(root.querySelector('[data-tabs]'), RECRUIT_TABS, tab);
   const text = RECRUIT_TAB_TEXT[tab];
   root.querySelector('[data-heading]').textContent = text.heading;
   root.querySelector('[data-sub]').textContent = text.sub;
@@ -1866,13 +1971,32 @@ async function viewRecruits(tab = 'mine') {
     if (tab === 'all' && f.tag.value) qs.set('tag', f.tag.value);
     listEl.replaceChildren(...skeleton(4, 'sk-reco'));
     try {
-      const r = await api(`/api/recruits?${qs}`);
-      const items = tab === 'all' ? r.recruits
-        : r.recruits.filter(x => (x.author_id === state.me.id) === (tab === 'mine'));
-      countEl.textContent = `(${items.length})`;
-      listEl.replaceChildren(...(items.length
-        ? items.map(x => (tab === 'mine' ? myRecruitCard(x, reload) : recruitCard(x)))
-        : [el('p', 'empty', text.empty)]));
+      if (tab === 'all') {
+        const r = await api(`/api/recruits?${qs}`);
+        /* 내가 쓴 글은 "내가 쓴 모집글" 탭에서 보므로 둘러보기에서는 뺀다 */
+        const items = state.me ? r.recruits.filter(x => x.author_id !== state.me.id) : r.recruits;
+        countEl.textContent = `(${items.length})`;
+        listEl.replaceChildren(...(items.length
+          ? items.map(recruitCard)
+          : [el('p', 'empty', text.empty)]));
+        return;
+      }
+      /* 내 글·내 팀 탭: 모집글과 그룹 스터디를 함께 보여 준다 (내가 쓴 것 = 글쓴이·방장, 참여 중 = 그 밖의 멤버) */
+      const [r, s] = await Promise.all([api(`/api/recruits?${qs}`), api('/api/studies?mine=1')]);
+      const own = x => x === state.me.id;
+      const recruits = r.recruits.filter(x => own(x.author_id) === (tab === 'mine'));
+      const studies = s.studies.filter(x => own(x.owner_id) === (tab === 'mine'));
+      countEl.textContent = `(${recruits.length + studies.length})`;
+      if (!recruits.length && !studies.length) {
+        listEl.replaceChildren(el('p', 'empty', text.empty));
+        return;
+      }
+      const out = [];
+      if (recruits.length) out.push(el('h3', 'grid-label', `팀원 모집글 ${recruits.length}`),
+        ...recruits.map(x => (tab === 'mine' ? myRecruitCard(x, reload) : recruitCard(x))));
+      if (studies.length) out.push(el('h3', 'grid-label', `그룹 스터디 ${studies.length}`),
+        ...studies.map(x => (tab === 'mine' ? myStudyCard(x, reload) : studyCard(x))));
+      listEl.replaceChildren(...out);
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
@@ -1882,26 +2006,68 @@ async function viewRecruits(tab = 'mine') {
   reload();
 }
 
-/* #/recruits/new 또는 #/recruits/new/{공모전 id} - 모집글 쓰기 (공모전을 미리 골라 둘 수 있다) */
-async function viewRecruitNew(postId) {
+/* #/recruits/new 또는 #/recruits/new/{공모전 id} - 모집글 쓰기 (공모전을 미리 골라 둘 수 있다)
+ * #/recruits/{id}/edit (editId) - 같은 화면으로 내 모집글 고치기 */
+async function viewRecruitNew(postId, editId) {
   markNav('recruits');
-  setPageTitle('모집글 쓰기');
+  setPageTitle(editId ? '모집글 수정' : '모집글 쓰기');
   if (!state.me) return requireLogin('모집글을 쓰려면 로그인하세요.');
+
+  let posts = [];
+  try { ({ posts } = await api('/api/posts')); } catch { /* 공모전 목록 없이도 쓸 수 있다 */ }
+
+  /* 고칠 글: 지금 값을 미리 채운다. 작성자(또는 관리자)가 아니면 고칠 수 없다 */
+  let editing = null;
+  if (editId) {
+    try { editing = await api(`/api/recruits/${editId}`); }
+    catch (e) { return renderMessage(e.message); }
+    if (!editing.can_edit) return renderMessage('작성자만 모집글을 고칠 수 있습니다.');
+    postId = editing.recruit.post_id || undefined;
+  }
+
+  /* 대상 학과가 아닌 공모전에서 [이 공모전으로 팀원 모집] 으로 들어오면 글쓰기 화면을 열지 않는다 (서버도 막는다) */
+  const target = postId && posts.find(p => p.id === Number(postId));
+  if (target && !target.can_comment && !editing) {
+    const box = el('section', 'card');
+    const back = el('a', 'btn ghost', '← 공모전으로 돌아가기');
+    back.href = `#/posts/${target.id}`;
+    box.append(el('h2', null, '모집글을 쓸 수 없습니다'),
+               el('p', 'muted', `"${target.title}" 은(는) 대상 학과가 정해진 공모전이라, 그 학과 학생만 팀원 모집글을 쓸 수 있습니다.`),
+               back);
+    return render(box);
+  }
 
   const node = tpl('tpl-recruit-new');
   const root = node.firstElementChild;
   const form = root.querySelector('[data-form]');
   const postSel = form.querySelector('[name="post_id"]');
-  const getTags = interestPicker(root.querySelector('[data-tag-picker]'), [],
+  const getTags = interestPicker(root.querySelector('[data-tag-picker]'), editing ? editing.tag_ids : [],
                                  { countEl: root.querySelector('[data-pick-count]') });
+  if (editing) {
+    const r = editing.recruit;
+    root.querySelector('.card-head h2').textContent = '모집글 수정';
+    form.querySelector('button[type="submit"]').textContent = '저장';
+    const back = root.querySelector('.back');
+    back.href = `#/recruits/${editId}`;
+    back.textContent = '← 모집글로 돌아가기';
+    form.elements.title.value = r.title;
+    form.elements.body.value = editing.body;
+    form.elements.need_people.value = r.need_people;
+    form.elements.deadline.value = r.deadline || '';
+  }
   render(node);
 
-  /* "함께 나갈 공모전" 선택 상자 채우기 */
-  try {
-    const { posts } = await api('/api/posts');
-    for (const p of posts) postSel.append(new Option(p.title, p.id));
-    if (postId) postSel.value = String(postId);
-  } catch { /* 공모전 목록 없이도 쓸 수 있다 */ }
+  const now = new Date();   /* 모집 마감일은 오늘부터 고를 수 있다 (서버도 지난 날짜를 막는다) */
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  /* 고칠 때 원래 마감일이 이미 지났으면 그 날짜는 그대로 둘 수 있게 (서버도 같은 규칙) */
+  const kept = editing && editing.recruit.deadline;
+  form.elements.deadline.min = kept && kept < today ? kept : today;
+  /* 아이콘뿐 아니라 칸 어디를 눌러도 달력이 펼쳐지게 */
+  form.elements.deadline.addEventListener('click', ev => { try { ev.currentTarget.showPicker(); } catch (e) {} });
+
+  /* "함께 나갈 공모전" 선택 상자: 내 학과가 참여할 수 있는 공모전만 고를 수 있다 */
+  for (const p of posts) if (p.can_comment || (target && p.id === target.id)) postSel.append(new Option(p.title, p.id));
+  if (target) postSel.value = String(target.id);
 
   form.onsubmit = async ev => {
     ev.preventDefault();
@@ -1909,16 +2075,16 @@ async function viewRecruitNew(postId) {
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
     try {
-      const out = await api('/api/recruits', {
-        method: 'POST',
+      const out = await api(editId ? `/api/recruits/${editId}` : '/api/recruits', {
+        method: editId ? 'PUT' : 'POST',
         body: JSON.stringify({
           title: v.title, body: v.body, post_id: Number(v.post_id) || 0,   /* 0 = 연결 없음 */
           need_people: Number(v.need_people || 1), deadline: v.deadline || null,
           tag_ids: getTags(),
         }),
       });
-      toast('모집글을 올렸습니다.');
-      location.hash = `#/recruits/${out.id}`;   /* 방금 쓴 글로 이동 */
+      toast(editId ? '고쳤습니다.' : '모집글을 올렸습니다.');
+      location.hash = `#/recruits/${out.id}`;   /* 방금 쓴(고친) 글로 이동 */
     } catch (e) {
       toast(e.message);
       btn.disabled = false;
@@ -1939,6 +2105,7 @@ async function viewRecruit(id) {
   const { recruit: r, body, comments, can_edit } = data;
   let team = data.team || [];
   const isAuthor = state.me && state.me.id === r.author_id;
+  if (!isAuthor && !r.in_team) markNav('recruit-browse');   /* 남의 글은 공모전 모집에서 들어온 것 */
   const node = tpl('tpl-recruit');
   const root = node.firstElementChild;
 
@@ -1947,7 +2114,7 @@ async function viewRecruit(id) {
   [back.href, back.textContent] = isAuthor ? ['#/recruits', '← 내 모집 관리']
     : r.in_team ? ['#/recruits/joined', '← 참여 중인 팀']
     : r.post_id ? [`#/posts/${r.post_id}`, '← 공모전으로']
-    : ['#/recruits/all', '← 모집글 둘러보기'];
+    : ['#/recruits/all', '← 공모전 모집'];
   if (!r.in_team && r.post_id) markNav('posts');   /* 공모전 화면에서 들어온 남의 모집글 */
 
   const top = root.querySelector('[data-tags-top]');
@@ -1965,7 +2132,7 @@ async function viewRecruit(id) {
   /* 함께 나갈 공모전 링크 (없으면 그 줄을 지운다) */
   const postP = root.querySelector('[data-post]');
   if (r.post_id) {
-    const a = el('a', null, `🏆 ${r.post_title}`);
+    const a = el('a', null, `공모전: ${r.post_title}`);
     a.href = `#/posts/${r.post_id}`;
     postP.append(el('span', 'muted', '함께 나갈 공모전 '), a);
   } else postP.remove();
@@ -1980,8 +2147,8 @@ async function viewRecruit(id) {
       : '마음에 들면 눌러 두세요. AI 가 비슷한 공모전과 잘 맞는 팀원을 더 잘 찾습니다.'));
   want.after(likeRow);   /* want 요소 바로 뒤에 끼워 넣는다 */
 
-  /* 나와 맞는 정도 (로그인한 학생에게만 서버가 match 를 준다) */
-  if (typeof r.match === 'number' && r.match > 0) {
+  /* 나와 맞는 정도 (로그인한 학생에게만 서버가 match 를 준다. 내가 쓴 글에는 보이지 않는다) */
+  if (!isAuthor && typeof r.match === 'number' && r.match > 0) {
     const box = root.querySelector('[data-match]');
     box.hidden = false;
     box.append(scoreRing(r.match));
@@ -2002,10 +2169,13 @@ async function viewRecruit(id) {
     find.hidden = !(state.me && state.me.id === r.author_id && r.status === 'open');
     find.href = `#/people/recruit/${id}`;
     if (isAuthor) {   /* 글쓴이는 언제나 팀이다 */
-      const go = el('a', 'btn small', '💬 채팅방으로 이동');
+      const go = el('a', 'btn small', '채팅방으로 이동');
       go.href = `#/chats/recruit/${id}`;
       ownerRow.prepend(go);
     }
+    const edit = el('a', 'btn ghost small', '수정');
+    edit.href = `#/recruits/${id}/edit`;
+    ownerRow.querySelector('[data-toggle]').before(edit);
     const tg = ownerRow.querySelector('[data-toggle]');
     tg.textContent = r.status === 'open' ? '모집 마감하기' : '다시 모집하기';
     tg.onclick = async () => {
@@ -2057,7 +2227,7 @@ async function viewRecruit(id) {
     /* 팀원: 팀 채팅방 / 팀 나가기 (글쓴이의 채팅방 버튼은 글쓴이 버튼 줄에 따로 둔다) */
     teamActions.replaceChildren();
     if (inTeam() && !isAuthor) {
-      const go = el('a', 'btn small', '💬 채팅방으로 이동');
+      const go = el('a', 'btn small', '채팅방으로 이동');
       go.href = `#/chats/recruit/${id}`;
       const leave = el('button', 'ghost small', '팀 나가기');
       leave.onclick = async () => {
@@ -2165,6 +2335,7 @@ function studyCard(s) {
 
   const top = el('div', 'reco-card-head');
   const tags = el('div', 'item-top');
+  if (s.confirmed_at) tags.append(el('span', 'tag confirmed', '확정된 그룹'));
   tags.append(el('span', full ? 'tag plain' : 'tag ok', `${s.member_count} / ${s.max_members}명`));
   if (s.mentor_count) tags.append(el('span', 'tag mentor', `멘토 ${s.mentor_count}`));
   if (s.mentee_count) tags.append(el('span', 'tag mentee', `멘티 ${s.mentee_count}`));
@@ -2191,10 +2362,12 @@ function studyCard(s) {
 /* 스터디 목록. 탭(tab)마다 서버에 묻는 조건이 다르다.
  *   all   #/studies              전체 (보기: 전체 / 내가 속한 스터디)
  *   major #/studies/major        내 학과를 대상 학과로 정한 스터디
- *   reco  #/studies/reco/{학과}  자체 모델이 이름·소개를 학과 전공 분야와 비교해 관련 있는 순으로 */
+ *   reco  #/studies/reco/{학과}  자체 모델이 이름·소개를 학과 전공 분야와 비교해 관련 있는 순으로
+ *   confirmed #/studies/confirmed  정원이 차서 확정된 그룹 (다른 탭에서는 빠진다. 단 "내가 속한 스터디" 보기에는 나온다) */
 async function viewStudies(tab = 'all', deptParam) {
   markNav(STUDY.path);
-  setPageTitle(tab === 'major' ? '내 학과 대상 스터디' : tab === 'reco' ? '학과별 추천 스터디' : STUDY.title);
+  setPageTitle(tab === 'major' ? '내 학과 대상 스터디' : tab === 'reco' ? '학과별 추천 스터디'
+    : tab === 'confirmed' ? '확정된 그룹' : STUDY.title);
   if (tab === 'major' && !needMyDept(STUDY_TABS, 'major', '로그인하면 내 학과 대상 스터디를 모아 볼 수 있습니다.')) return;
 
   const node = tpl(`tpl-${STUDY.list}`);
@@ -2222,6 +2395,11 @@ async function viewStudies(tab = 'all', deptParam) {
     heading.textContent = `${state.me.department_name} 대상 스터디`;
     sub.textContent = '스터디를 만들 때 대상 학과를 내 학과로 정한 스터디입니다.';
     empty = `아직 내 학과 대상 ${STUDY.ga} 없습니다. 첫 ${STUDY.eul} 만들어 보세요.`;
+  } else if (tab === 'confirmed') {
+    qs.set('confirmed', '1');
+    heading.textContent = '확정된 그룹';
+    sub.textContent = '인원이 모두 모여 멤버가 확정된 스터디입니다. 더는 참여를 신청할 수 없습니다.';
+    empty = '아직 확정된 그룹이 없습니다.';
   } else if (tab === 'reco') {
     const dept = recoDept(deptParam);
     fillDeptSelect(deptSel);
@@ -2253,19 +2431,52 @@ async function viewStudies(tab = 'all', deptParam) {
   reload();
 }
 
-/* #/studies/new - 스터디 만들기 */
-function viewStudyNew() {
+/* #/studies/new - 스터디 만들기
+ * #/studies/{id}/edit (editId) - 같은 화면으로 스터디 고치기 (방장·관리자) */
+async function viewStudyNew(editId) {
   markNav(STUDY.path);
-  setPageTitle(`${STUDY.n} 만들기`);
+  setPageTitle(editId ? `${STUDY.n} 수정` : `${STUDY.n} 만들기`);
   if (!state.me) return requireLogin(`${STUDY.eul} 만들려면 로그인하세요.`);
+
+  /* 고칠 스터디: 지금 값을 미리 채운다 */
+  let editing = null;
+  if (editId) {
+    try { editing = await api(`/api/studies/${editId}`); }
+    catch (e) { return renderMessage(e.message); }
+    if (!editing.can_manage) return renderMessage('방장만 스터디를 고칠 수 있습니다.');
+  }
 
   const node = tpl(`tpl-${STUDY.tpl}-new`);
   const form = node.querySelector('[data-form]');
-  const deptSel = form.querySelector('[data-dept]');
-  fillDeptSelect(deptSel);
-  if (state.me.department_id) deptSel.value = String(state.me.department_id);   /* 기본은 내 학과 (전공책 판매와 같다) */
+  const checksEl = form.querySelector('[data-dept-checks]');
+  deptChecks(checksEl, 'study-');
   const now = new Date();   /* 종료일은 오늘부터 고를 수 있다 (지난 날짜면 바로 지워지므로) */
-  form.elements.end_date.min = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  if (editing) {
+    const st = editing.study;
+    node.querySelector('.card-head h2').textContent = `${STUDY.n} 수정`;
+    form.querySelector('button[type="submit"]').textContent = '저장';
+    form.querySelector('p.muted.small').textContent = '대상 학과를 바꿔도 이미 들어온 멤버는 그대로 남습니다. 정원은 지금 인원보다 적게 줄일 수 없습니다.';
+    const back = node.querySelector('.back');
+    back.href = `#/${STUDY.path}/${editId}`;
+    back.textContent = `← ${STUDY.n}로 돌아가기`;
+    form.elements.name.value = st.name;
+    form.elements.max_members.value = st.max_members;
+    form.elements.max_members.min = Math.max(2, st.member_count);
+    form.elements.end_date.value = st.end_date || '';
+    form.elements.description.value = editing.description || '';
+    for (const d of st.department_ids) {
+      const box = checksEl.querySelector(`input[value="${d}"]`);
+      if (box) box.checked = true;
+    }
+  } else {
+    /* 기본은 내 학과에 체크 (전공책 판매와 같다). 다른 학과를 더 고르거나 모두 풀 수 있다 */
+    const myBox = checksEl.querySelector(`input[value="${state.me.department_id}"]`);
+    if (myBox) myBox.checked = true;
+  }
+  /* 고칠 때 원래 종료일이 이미 지났으면 그 날짜는 그대로 둘 수 있게 (서버도 같은 규칙) */
+  const kept = editing && editing.study.end_date;
+  form.elements.end_date.min = kept && kept < today ? kept : today;
   /* 아이콘뿐 아니라 칸 어디를 눌러도 달력이 펼쳐지게 */
   form.elements.end_date.addEventListener('click', ev => { try { ev.currentTarget.showPicker(); } catch (e) {} });
   form.onsubmit = async ev => {
@@ -2274,13 +2485,13 @@ function viewStudyNew() {
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
     try {
-      const out = await api('/api/studies', {
-        method: 'POST',
+      const out = await api(editId ? `/api/studies/${editId}` : '/api/studies', {
+        method: editId ? 'PUT' : 'POST',
         body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6),
-                               end_date: v.end_date || null, department_id: Number(v.department_id) || null,
+                               end_date: v.end_date || null, department_ids: checkedDepts(checksEl, 'study-'),
                                role: v.role }),
       });
-      toast(`${STUDY.eul} 만들었습니다. 멤버를 추가해 보세요.`);
+      toast(editId ? '고쳤습니다.' : `${STUDY.eul} 만들었습니다. 멤버를 추가해 보세요.`);
       location.hash = `#/${STUDY.path}/${out.id}`;
     } catch (e) {
       toast(e.message);
@@ -2316,7 +2527,7 @@ function studyMemberRow(m, study, canManage, reload) {
       } catch (e) { toast(e.message); sel.value = m.role; }
     };
     tools.append(sel);
-    if (!m.is_owner) {
+    if (!m.is_owner && (!study.confirmed_at || state.me.is_admin)) {   /* 확정된 그룹은 관리자만 내보낼 수 있다 */
       const out = el('button', 'ghost small danger', '내보내기');
       out.onclick = async () => {
         if (!(await askConfirm(`${m.nickname} 님을 ${STUDY.n}에서 내보낼까요?`))) return;
@@ -2343,18 +2554,21 @@ async function viewStudy(id) {
   try { data = await api(`/api/studies/${id}`); }
   catch (e) { return renderMessage(e.message); }
 
-  const { study: s, description, members, can_manage } = data;
+  const { study: s, description, members, can_manage, my_request, requests } = data;
+  const confirmed = !!s.confirmed_at;   /* 정원이 차서 확정된 그룹: 멤버가 더는 바뀌지 않는다 */
   const reload = () => viewStudy(id);
   const node = tpl(`tpl-${STUDY.tpl}`);
   const root = node.firstElementChild;
   const full = s.member_count >= s.max_members;
 
   const top = root.querySelector('[data-tags-top]');
-  top.append(el('span', full ? 'tag plain' : 'tag ok', full ? '정원 마감' : '참여 가능'));
+  top.append(confirmed ? el('span', 'tag confirmed', '확정된 그룹')
+                       : el('span', full ? 'tag plain' : 'tag ok', full ? '정원 마감' : '모집 중'));
   if (s.my_role) top.append(el('span', 'tag owner', `참여 중 · ${ROLE_LABEL[s.my_role]}`));
   root.querySelector('[data-name]').textContent = s.name;
   root.querySelector('[data-owner]').textContent = s.owner_nickname;
-  root.querySelector('[data-count]').textContent = `${s.member_count} / ${s.max_members}명`;
+  root.querySelector('[data-count]').textContent =
+    `${s.member_count} / ${s.max_members}명${confirmed ? ` (${s.confirmed_at.slice(0, 10)} 확정)` : ''}`;
   root.querySelector('[data-mm]').textContent = `멘토 ${s.mentor_count} · 멘티 ${s.mentee_count}`;
   root.querySelector('[data-dept]').textContent = s.department || '학과 무관';
   root.querySelector('[data-created]').textContent = s.created_at;
@@ -2365,26 +2579,44 @@ async function viewStudy(id) {
   const actions = root.querySelector('[data-actions]');
   const isOwner = state.me && state.me.id === s.owner_id;
   if (s.my_role) {
-    const go = el('a', 'btn small', '💬 채팅방으로 이동');
+    const go = el('a', 'btn small', '채팅방으로 이동');
     go.href = `#/chats/study/${id}`;
     actions.append(go);
   }
   if (!state.me) {
-    const a = el('a', 'btn small', '로그인하고 참여하기');
-    a.href = '#/login';
-    actions.append(a);
+    if (!confirmed) {
+      const a = el('a', 'btn small', '로그인하고 참여 신청');
+      a.href = '#/login';
+      actions.append(a);
+    }
+  } else if (!s.my_role && !state.me.is_admin && my_request) {
+    /* 신청해 두고 방장의 수락을 기다리는 중 */
+    actions.append(el('span', 'tag plain', '참여 신청 · 방장 수락 대기 중'));
+    const cancel = el('button', 'ghost small', '신청 취소');
+    cancel.onclick = async () => {
+      try {
+        await api(`/api/studies/${id}/join`, { method: 'DELETE' });
+        toast('참여 신청을 취소했습니다.');
+        reload();
+      } catch (e) { toast(e.message); }
+    };
+    actions.append(cancel);
   } else if (!s.my_role && !state.me.is_admin) {
-    const join = el('button', 'small', full ? '정원이 찼습니다' : '참여하기');
-    join.disabled = full;
+    /* 참여는 신청제: 방장에게 알림이 가고, 방장이 수락하면 멤버가 된다 (서버: handle_study_join).
+     * 대상 학과가 정해진 스터디는 그 학과 학생만 신청할 수 있다 */
+    const myDept = !s.department_ids.length || s.department_ids.includes(state.me.department_id);
+    const join = el('button', 'small', confirmed ? '확정된 그룹입니다' : !myDept ? '대상 학과가 아닙니다'
+      : full ? '정원이 찼습니다' : '참여 신청');
+    join.disabled = confirmed || full || !myDept;
     join.onclick = async () => {
       try {
         await api(`/api/studies/${id}/join`, { method: 'POST' });
-        toast(`${STUDY.n}에 참여했습니다.`);
+        toast('방장에게 참여 신청을 보냈습니다. 수락되면 알림으로 알려 드립니다.');
         reload();
       } catch (e) { toast(e.message); }
     };
     actions.append(join);
-  } else if (s.my_role && !isOwner) {
+  } else if (s.my_role && !isOwner && !confirmed) {
     const leave = el('button', 'ghost small', `${STUDY.n} 나가기`);
     leave.onclick = async () => {
       if (!(await askConfirm(`이 ${STUDY.n}에서 나갈까요?`))) return;
@@ -2396,12 +2628,15 @@ async function viewStudy(id) {
     };
     actions.append(leave);
   }
-  if (isOwner && !full) {
+  if (isOwner && !full && !confirmed) {
     const find = el('a', 'btn small', '팀원 찾기');
     find.href = `#/people/study/${id}`;
     actions.append(find);
   }
   if (can_manage) {
+    const edit = el('a', 'btn ghost small', '수정');
+    edit.href = `#/${STUDY.path}/${id}/edit`;
+    actions.append(edit);
     const del = el('button', 'ghost small danger', `${STUDY.n} 삭제`);
     del.onclick = async () => {
       if (!(await askConfirm(`이 ${STUDY.eul} 지울까요? 멤버 목록도 함께 지워집니다.`))) return;
@@ -2426,8 +2661,45 @@ async function viewStudy(id) {
     memEl.append(group);
   }
 
-  /* 방장: 회원 찾아서 추가 */
-  if (can_manage) {
+  /* 방장: 대기 중인 참여 신청 (수락 / 거절). 멤버 목록 위에 둔다 */
+  if (can_manage && requests.length) {
+    const box = el('section', 'card');
+    const head = el('div', 'card-head');
+    head.append(el('h2', null, `참여 신청 (${requests.length})`));
+    box.append(head);
+    const list = el('div', 'mini-list');
+    for (const q of requests) {
+      const r = el('div', 'mini-row');
+      r.append(el('strong', null, q.nickname),
+               el('span', 'muted', [q.department, `${q.created_at} 신청`].filter(Boolean).join(' · ')));
+      const ok = el('button', 'small', '수락');
+      const no = el('button', 'ghost small danger', '거절');
+      ok.onclick = async () => {
+        ok.disabled = no.disabled = true;
+        try {
+          await api(`/api/studies/${id}/requests/${q.user_id}`, { method: 'POST' });
+          toast(`${q.nickname} 님을 멤버로 받았습니다.`);
+          reload();
+        } catch (e) { toast(e.message); ok.disabled = no.disabled = false; }
+      };
+      no.onclick = async () => {
+        if (!(await askConfirm(`${q.nickname} 님의 참여 신청을 거절할까요?`))) return;
+        ok.disabled = no.disabled = true;
+        try {
+          await api(`/api/studies/${id}/requests/${q.user_id}`, { method: 'DELETE' });
+          toast('거절했습니다.');
+          reload();
+        } catch (e) { toast(e.message); ok.disabled = no.disabled = false; }
+      };
+      r.append(ok, no);
+      list.append(r);
+    }
+    box.append(list);
+    memEl.closest('.card').before(box);
+  }
+
+  /* 방장: 회원 찾아서 추가 (확정된 그룹은 멤버가 바뀌지 않으므로 숨긴다) */
+  if (can_manage && !confirmed) {
     const box = root.querySelector('[data-add]');
     box.hidden = false;
     const form = box.querySelector('[data-search]');
@@ -2435,10 +2707,12 @@ async function viewStudy(id) {
     if (full) results.append(el('p', 'empty small', '정원이 찼습니다. 멤버를 더 넣으려면 누군가 나가야 합니다.'));
     form.onsubmit = async ev => {
       ev.preventDefault();
-      const { q, role } = formValues(form);
-      if (!q) return;
+      const { q, role } = formValues(form);   /* 비워 두고 찾으면 추가할 수 있는 회원을 모두 보여 준다 */
+      const btn = form.querySelector('button[type="submit"]');
+      btn.disabled = true;
+      results.replaceChildren(el('p', 'muted small', '찾는 중…'));
       try {
-        const { users } = await api(`/api/studies/${id}/candidates?q=${encodeURIComponent(q)}`);
+        const { users } = await api(`/api/studies/${id}/candidates?q=${encodeURIComponent(q || '')}`);
         results.replaceChildren(...(users.length ? users.map(u => {
           const r = el('div', 'mini-row');
           r.append(el('strong', null, u.nickname), el('span', 'muted', u.department || ''));
@@ -2454,8 +2728,13 @@ async function viewStudy(id) {
           };
           r.append(add);
           return r;
-        }) : [el('p', 'empty small', '찾는 회원이 없거나 이미 멤버입니다.')]));
-      } catch (e) { toast(e.message); }
+        }) : [el('p', 'empty small', q
+          ? `"${q}" 에 맞는 회원이 없습니다. 이미 멤버이거나, 대상 학과가 아닌 회원은 나오지 않습니다.`
+          : '추가할 수 있는 회원이 없습니다. 이미 모두 멤버이거나, 대상 학과가 아닌 회원은 나오지 않습니다.')]));
+      } catch (e) {
+        results.replaceChildren(el('p', 'empty small', e.message));
+      }
+      btn.disabled = false;
     };
   }
 
@@ -2558,12 +2837,12 @@ async function viewAdminUsers() {
     if (u.suspended_until) who.append(el('span', null, `정지 사유: ${u.suspend_reason || '-'}`));
     const tools = el('div', 'admin-tools');
     if (u.id !== state.me.id) {
-      const notify = el('button', 'ghost small', '📢 알림 보내기');
+      const notify = el('button', 'ghost small', '알림 보내기');
       notify.onclick = () => adminNotifyForm(r, u);
       tools.append(notify);
     }
     if (u.role === 'student' && u.suspended_until) {
-      const lift = el('button', 'ghost small', '🔓 정지 풀기');
+      const lift = el('button', 'ghost small', '정지 풀기');
       lift.onclick = async () => {
         if (!(await askConfirm(`${u.nickname} 님의 정지를 지금 풀까요?`))) return;
         try {
@@ -2574,7 +2853,7 @@ async function viewAdminUsers() {
       };
       tools.append(lift);
     } else if (u.role === 'student') {
-      const ban = el('button', 'ghost small danger', '⛔ 정지');
+      const ban = el('button', 'ghost small danger', '정지');
       ban.onclick = () => suspendForm(r, u);
       tools.append(ban);
     }
@@ -2720,7 +2999,7 @@ async function viewAdminContent() {
       el('span', null, `${K.owner} ${it.owner_nickname} (${it.owner_student_no}) · ${it.created_at} · ` +
                        (it.type === 'study' ? `멤버 ${it.count}명` : `댓글 ${it.count}개`)));
     const tools = el('div', 'admin-tools');
-    const notify = el('button', 'ghost small', `📢 ${K.owner}에게 알림`);
+    const notify = el('button', 'ghost small', `${K.owner}에게 알림`);
     notify.onclick = () => adminNotifyForm(r, { id: it.owner_id, nickname: it.owner_nickname },
                                            { title: `관리자 안내: '${it.title}'`.slice(0, 100), link });
     tools.append(notify);
@@ -2755,12 +3034,13 @@ async function viewAdminContent() {
 
 /* ══════════════════════════════════════════════════ 알림함 */
 
-const NOTI_ICON = { invite: '✉', invite_accepted: '✅', team: '🤝', admin: '📢', suspend: '⛔', unsuspend: '🔓' };
-const NOTI_KIND = { invite: '참여 권유', invite_accepted: '권유 수락', team: '팀 합류', admin: '관리자 알림', suspend: '계정 정지', unsuspend: '정지 해제' };
+const NOTI_KIND = { invite: '참여 권유', invite_accepted: '권유 수락', team: '팀 합류', admin: '관리자 알림', suspend: '계정 정지', unsuspend: '정지 해제', book_chat: '전공책 채팅',
+                    study_request: '스터디 참여 신청', study_accept: '스터디 수락', study_reject: '스터디 신청 결과',
+                    study_confirmed: '스터디 확정' };
 /* 누르면 바로 그 화면(link)으로 가는 알림. 나머지(관리자·정지 알림)는 자세히 보기 화면으로 */
 const NOTI_GO_LINK = new Set(['invite', 'invite_accepted', 'team']);
 /* 참여 권유 알림의 상태(서버 invite_state)별 버튼 글자. open 만 누를 수 있다 */
-const INVITE_BTN = { open: '참여하기', accepted: '✓ 참여함', member: '이미 참여 중', closed: '마감됨', gone: '지워진 글' };
+const INVITE_BTN = { open: '참여하기', accepted: '참여함', member: '이미 참여 중', closed: '마감됨', gone: '지워진 글' };
 
 /* #/notifications - 내 알림. 누르면 읽음으로 표시하고 그 화면(link)으로 간다 */
 async function viewNotifications() {
@@ -2788,7 +3068,7 @@ async function viewNotifications() {
     item.tabIndex = 0;
     item.setAttribute('role', 'link');
     const main = el('div', 'noti-main');
-    main.append(el('strong', null, `${NOTI_ICON[n.kind] || '🔔'} ${n.title}`));
+    main.append(el('strong', null, n.title));
     if (n.body) main.append(el('p', null, n.body));
     main.append(el('small', null, (NOTI_GO_LINK.has(n.kind) ? '' : `${n.actor_nickname || '관리자'} · `) + n.created_at +
                                   (NOTI_GO_LINK.has(n.kind) ? '' : ' · 눌러서 자세히 보기')));
@@ -2893,7 +3173,7 @@ async function viewNotification(id) {
   const root = node.firstElementChild;
   root.querySelector('[data-tags-top]').append(
     el('span', n.kind === 'suspend' ? 'tag suspended' : 'tag owner', NOTI_KIND[n.kind] || '알림'));
-  root.querySelector('[data-title]').textContent = `${NOTI_ICON[n.kind] || '🔔'} ${n.title}`;
+  root.querySelector('[data-title]').textContent = n.title;
   root.querySelector('[data-actor]').textContent = n.actor_nickname || '관리자';
   root.querySelector('[data-created]').textContent = n.created_at;
   root.querySelector('[data-body]').textContent = n.body || '내용이 없습니다.';
@@ -2926,13 +3206,13 @@ const BOOK_PHOTO_MAX = 5;
 const photoUrl = id => `/api/book-photos/${id}`;
 const priceText = n => (n ? `${n.toLocaleString('ko-KR')}원` : '나눔');
 
-/* 거래 정보 버튼에 쓰는 고정 목록. 장소는 우리 학교 건물에 맞게 고쳐 쓴다. */
-const BOOK_PLACES = ['정문', '중앙도서관', '학생회관', '학생식당', '기숙사 앞', '버스정류장'];
+/* 거래 정보 버튼에 쓰는 고정 목록. 장소는 서경대학교 건물 (목록에 없는 곳은 직접 입력 칸에 적는다) */
+const BOOK_PLACES = ['유담관', '북악관', '본관', '한림관', '혜인관', '문예관', '대일관', '청운관', '은주1관', '은주2관'];
 const BOOK_DAYS   = ['월', '화', '수', '목', '금', '토', '일'];
 const BOOK_SLOTS  = [['오전', '9~12시'], ['점심', '12~13시'], ['오후', '13~18시'], ['저녁', '18시~']];
 
 /* 서버에 저장하는 글자 형식 (사람이 읽어도 되고, 다시 버튼으로 풀 수도 있다)
- *   trade_places  "중앙도서관 · 정문"
+ *   trade_places  "북악관 · 본관"
  *   trade_times   "월·수·금 / 점심·오후"   (요일만 / 시간대만 있으면 그쪽만)
  *   trade_wish    "수요일 12:30"           (요일만 / 시각만도 된다) */
 const splitPlaces = s => (s || '').split(' · ').map(x => x.trim()).filter(Boolean);
@@ -2979,8 +3259,7 @@ function wishPicker(initial) {
   day.append(new Option('요일 선택', ''), ...BOOK_DAYS.map(d => new Option(`${d}요일`, d)));
   day.value = m[1] || '';
   const time = el('input');
-  time.type = 'time';
-  time.step = 600;
+  time.type = 'time';   /* 분 단위로 자유롭게 (예전에는 10분 단위만 받았다) */
   time.setAttribute('aria-label', '희망 시각');
   time.value = m[2] ? m[2].padStart(5, '0') : '';
   box.append(day, time);
@@ -2996,7 +3275,7 @@ function tradeFields(host, b = {}) {
   const placeChips = pickChips(BOOK_PLACES.map(p => [p]), places, '원하는 학교 장소');
   const placeEtc = el('input');
   placeEtc.maxLength = 60;
-  placeEtc.placeholder = '직접 입력 (예: 공학관 3층 라운지)';
+  placeEtc.placeholder = '직접 입력 (예: 북악관 3층 라운지)';
   placeEtc.value = extra.join(', ');
 
   const t = splitTimes(b.trade_times);
@@ -3012,9 +3291,9 @@ function tradeFields(host, b = {}) {
     return f;
   };
   host.replaceChildren(
-    field('📍 원하는 학교 장소', '여러 곳 고를 수 있어요', placeChips, placeEtc),
-    field('🗓 거래 가능한 시간', '요일과 시간대를 눌러 고르세요', dayChips, slotChips),
-    field('⏰ 희망 거래 시간', '가장 좋은 때 하나', wish));
+    field('원하는 학교 장소', '여러 곳 고를 수 있어요', placeChips, placeEtc),
+    field('거래 가능한 시간', '요일과 시간대를 눌러 고르세요', dayChips, slotChips),
+    field('희망 거래 시간', '가장 좋은 때 하나', wish));
 
   return () => ({
     trade_places: [...placeChips.values(),
@@ -3026,9 +3305,9 @@ function tradeFields(host, b = {}) {
 
 /* 상세 화면의 거래 정보 보기 (정하지 않은 칸은 "협의") */
 function tradeView(host, b) {
-  const row = (icon, title, chips) => {
+  const row = (title, chips) => {
     const r = el('div', 'trade-row');
-    r.append(el('span', 'trade-key', `${icon} ${title}`));
+    r.append(el('span', 'trade-key', title));
     const v = el('div', 'chips');
     v.append(...(chips.length ? chips.map(c => el('span', 'chip', c)) : [el('span', 'muted', '협의')]));
     r.append(v);
@@ -3039,9 +3318,9 @@ function tradeView(host, b) {
     .filter(Boolean);
   if (!t.days.length && !t.slots.length && b.trade_times) times.push(b.trade_times);   /* 형식이 다른 옛 값 */
   host.replaceChildren(
-    row('📍', '원하는 장소', splitPlaces(b.trade_places)),
-    row('🗓', '거래 가능 시간', times),
-    row('⏰', '희망 거래 시간', b.trade_wish ? [b.trade_wish] : []));
+    row('원하는 장소', splitPlaces(b.trade_places)),
+    row('거래 가능 시간', times),
+    row('희망 거래 시간', b.trade_wish ? [b.trade_wish] : []));
 }
 
 /* 학과 선택 상자에 단과대학별 학과를 채운다 (optgroup 으로 묶음) */
@@ -3067,9 +3346,9 @@ function bookCard(b) {
     img.alt = '';
     img.loading = 'lazy';
     thumb.append(img);
-    if (b.photo_count > 1) thumb.append(el('span', 'photo-n', `📷 ${b.photo_count}`));
+    if (b.photo_count > 1) thumb.append(el('span', 'photo-n', `사진 ${b.photo_count}`));
   } else {
-    thumb.append(el('span', null, '📚'));
+    thumb.append(el('span', 'no-photo', '사진 없음'));
   }
   if (typeof b.score === 'number') {
     const ring = scoreRing(b.score);
@@ -3088,8 +3367,8 @@ function bookCard(b) {
   body.append(el('p', 'book-price' + (b.price ? '' : ' free'), priceText(b.price)));
   const places = splitPlaces(b.trade_places);
   if (places.length || b.trade_wish) {
-    const where = places.length ? `📍 ${places[0]}${places.length > 1 ? ` 외 ${places.length - 1}` : ''}` : '';
-    body.append(el('p', 'book-trade', [where, b.trade_wish && `⏰ ${b.trade_wish}`].filter(Boolean).join('  ')));
+    const where = places.length ? `${places[0]}${places.length > 1 ? ` 외 ${places.length - 1}` : ''}` : '';
+    body.append(el('p', 'book-trade', [where, b.trade_wish].filter(Boolean).join(' · ')));
   }
   if (b.terms && b.terms.length) body.append(recoTerms(b.terms));
   const meta = el('div', 'item-meta');
@@ -3104,11 +3383,15 @@ function bookCard(b) {
 /* 책 목록. 탭(tab)마다 서버에 묻는 조건이 다르다.
  *   all   #/books              전체 (검색, 학과, 판매 상태, 정렬)
  *   major #/books/major        판매 글의 학과가 내 학과인 책 (학과 칸 대신 내 학과로 고정)
- *   reco  #/books/reco/{학과}  자체 모델이 제목·과목·설명을 학과 전공 분야와 비교해 관련 있는 순으로 (판매 중만) */
+ *   reco  #/books/reco/{학과}  자체 모델이 제목·과목·설명을 학과 전공 분야와 비교해 관련 있는 순으로 (판매 중만)
+ *   mine  #/books/mine         내가 올린 판매 글만 (판매 완료 포함이 기본) */
 async function viewBooks(tab = 'all', deptParam) {
   markNav('books');
-  setPageTitle(tab === 'major' ? '내 학과 대상 전공책' : tab === 'reco' ? '학과별 추천 전공책' : '전공책 장터');
+  setPageTitle(tab === 'major' ? '내 학과 대상 전공책' : tab === 'reco' ? '학과별 추천 전공책'
+    : tab === 'mine' ? '내 판매 글' : '전공책 장터');
   if (tab === 'major' && !needMyDept(BOOK_TABS, 'major', '로그인하면 내 학과 전공책만 모아 볼 수 있습니다.')) return;
+  if (tab === 'mine' && !state.me)
+    return renderTabNote(BOOK_TABS, 'mine', loginNote('로그인하면 내가 올린 판매 글만 모아 볼 수 있습니다.'));
 
   const node = tpl('tpl-books');
   const root = node.firstElementChild;
@@ -3120,10 +3403,7 @@ async function viewBooks(tab = 'all', deptParam) {
   const form = root.querySelector('[data-filters]');
   const f = name => root.querySelector(`[data-f="${name}"]`);
   fillDeptSelect(f('dept'));
-  if (!state.me) {
-    root.querySelector('[data-new]').href = '#/login';
-    f('status').querySelector('[value="mine"]').disabled = true;
-  }
+  if (!state.me) root.querySelector('[data-new]').href = '#/login';
 
   let reco = 0;   /* 학과별 추천 탭에서 고른 학과 */
   if (tab === 'major') {
@@ -3132,6 +3412,10 @@ async function viewBooks(tab = 'all', deptParam) {
     form.classList.replace('four', 'three');
     heading.textContent = `${state.me.department_name} 전공책`;
     sub.textContent = '판매 글에 학과를 내 학과로 정한 책입니다.';
+  } else if (tab === 'mine') {
+    f('status').value = 'all';   /* 내 글은 판매 완료한 것까지 보이게 */
+    heading.textContent = '내 판매 글';
+    sub.textContent = '내가 올린 전공책 판매 글입니다. 글을 눌러 수정하거나 판매 상태를 바꿀 수 있습니다.';
   } else if (tab === 'reco') {
     const deptSel = root.querySelector('[data-reco-dept]');
     reco = recoDept(deptParam);
@@ -3149,17 +3433,17 @@ async function viewBooks(tab = 'all', deptParam) {
     listEl.replaceChildren(...skeleton(6, 'sk-reco'));
     const st = f('status').value;
     const qs = reco ? new URLSearchParams({ reco })
-      : new URLSearchParams({ sort: f('sort').value, status: st === 'mine' ? 'all' : st });
+      : new URLSearchParams({ sort: f('sort').value, status: st });
     if (!reco && f('q').value.trim()) qs.set('q', f('q').value.trim());
     if (!reco && f('dept').value) qs.set('dept', f('dept').value);
-    if (!reco && st === 'mine') qs.set('mine', '1');
+    if (tab === 'mine') qs.set('mine', '1');
     try {
       const r = await api(`/api/books?${qs}`);
       countEl.textContent = `(${r.books.length})`;
       listEl.replaceChildren(...(r.books.length
         ? r.books.map(bookCard)
         : [el('p', 'empty', reco ? '이 학과와 관련 있다고 판단한 판매 중인 책이 아직 없습니다.'
-                          : st === 'mine' ? '아직 올린 판매 글이 없습니다.'
+                          : tab === 'mine' ? '아직 올린 판매 글이 없습니다. 다 본 전공책을 올려 보세요.'
                           : '조건에 맞는 책이 없습니다. 다 본 전공책을 올려 보세요.')]));
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
@@ -3374,7 +3658,7 @@ async function viewBook(id) {
   tradeView(tradeBox, b);
   const isSeller = state.me && state.me.id === b.seller_id;
   if (can_manage) {
-    const edit = el('button', 'ghost small', '✏ 거래 정보 바꾸기');
+    const edit = el('button', 'ghost small', '거래 정보 바꾸기');
     edit.type = 'button';
     edit.onclick = () => {
       const values = tradeFields(tradeBox, b);
@@ -3395,7 +3679,7 @@ async function viewBook(id) {
     tradeActs.append(edit);
   }
   if (!isSeller && b.status !== 'sold') {
-    const ask = el('button', 'small', '🤝 이 조건으로 거래 요청');
+    const ask = el('button', 'small', '이 조건으로 거래 요청');
     ask.type = 'button';
     ask.onclick = () => {
       if (!state.me) return toast('로그인 후 거래를 요청할 수 있습니다.');
@@ -3404,25 +3688,58 @@ async function viewBook(id) {
       const pick = el('div', 'trade-ask');
       const placeChips = places.length ? pickChips(places.map(p => [p]), [places[0]], '만날 장소', true) : null;
       const wish = wishPicker(b.trade_wish);
-      const go = el('button', 'small', '문의 칸에 넣기');
-      go.type = 'button';
-      go.onclick = () => {
+      const askText = () => {
         const where = placeChips ? placeChips.values()[0] : '';
         const when = wish.value();
-        const text = `${where ? `📍 ${where}` : ''}${where && when ? ', ' : ''}${when ? `⏰ ${when}` : ''}`;
+        const text = `${where}${where && when ? ', ' : ''}${when}`;
+        return `${text ? text + ' 에 ' : ''}거래 가능할까요? 「${b.title}」 사고 싶습니다.`;
+      };
+      const go = el('button', 'ghost small', '문의 칸에 넣기');
+      go.type = 'button';
+      go.onclick = () => {
         const ta = root.querySelector('[data-comment-form] textarea');
-        ta.value = `${text ? text + ' 에 ' : ''}거래 가능할까요? 「${b.title}」 사고 싶습니다.`;
+        ta.value = askText();
         ta.focus();
         ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
         pick.remove();
         ask.hidden = false;
       };
-      if (placeChips) pick.append(el('span', 'field-label', '📍 만날 장소'), placeChips);
-      pick.append(el('span', 'field-label', '⏰ 내가 원하는 시간'), wish, go);
+      /* 판매자에게만 보이는 1:1 채팅으로 바로 보내고 그 방으로 간다 */
+      const dm = el('button', 'small', '채팅으로 보내기');
+      dm.type = 'button';
+      dm.onclick = async () => {
+        dm.disabled = true;
+        try {
+          const chatId = await openBookChat(id);
+          await api(`/api/chats/book/${chatId}/messages`, { method: 'POST', body: JSON.stringify({ body: askText() }) });
+          location.hash = `#/chats/book/${chatId}`;
+        } catch (e) { toast(e.message); dm.disabled = false; }
+      };
+      const btns = el('div', 'row');
+      btns.append(dm, go);
+      if (placeChips) pick.append(el('span', 'field-label', '만날 장소'), placeChips);
+      pick.append(el('span', 'field-label', '내가 원하는 시간'), wish, btns);
       ask.hidden = true;
       tradeBox.after(pick);
     };
     tradeActs.append(ask);
+  }
+
+  /* 1:1 채팅: 사는 사람은 [판매자와 채팅하기] (판매 완료면 이미 연 방만), 판매자는 이 책에 온 대화 수 */
+  if (!isSeller && (b.status !== 'sold' || data.my_chat_id)) {
+    const chat = el('button', 'small', data.my_chat_id ? '판매자와 채팅 이어가기' : '판매자와 채팅하기');
+    chat.type = 'button';
+    chat.onclick = async () => {
+      if (!state.me) return toast('로그인 후 판매자와 채팅할 수 있습니다.');
+      chat.disabled = true;
+      try { location.hash = `#/chats/book/${await openBookChat(id)}`; }
+      catch (e) { toast(e.message); chat.disabled = false; }
+    };
+    tradeActs.prepend(chat);
+  } else if (isSeller && data.chat_count) {
+    const a = el('a', 'btn small', `이 책에 온 채팅 ${data.chat_count}개`);
+    a.href = '#/chats';
+    tradeActs.prepend(a);
   }
 
   /* 판매자·관리자: 판매 상태 바꾸기, 삭제 */
@@ -3491,6 +3808,12 @@ async function viewBook(id) {
   render(node);
 }
 
+/* 전공책 판매자와의 1:1 채팅방을 열고 (이미 있으면 그 방) 방 id 를 돌려준다 */
+async function openBookChat(bookId) {
+  const out = await api(`/api/books/${bookId}/chat`, { method: 'POST' });
+  return out.chat_id;
+}
+
 /* ══════════════════════════════════════════ 팀원 찾기 · 내 프로필 */
 
 /* 잘 맞는 회원 카드: 아바타, 소속, 점수 게이지, 키워드(겹치는 것 강조), ♥ 관계, 자기소개 */
@@ -3525,12 +3848,12 @@ function personCard(m, target) {
     const done = () => {
       btn.disabled = true;
       btn.classList.add('sent');
-      btn.textContent = '✓ 권유 보냄';
+      btn.textContent = '권유 보냄';
     };
     if (m.invited) done();
     else if (!target.open) { btn.disabled = true; btn.textContent = '모집 마감'; }
     else {
-      btn.textContent = '✉ 참여 권유';
+      btn.textContent = '참여 권유';
       btn.onclick = async () => {
         if (!(await askConfirm(`${m.nickname} 님에게 '${target.title}' 참여를 권유할까요?\n알림함과 학교 메일로 안내가 가며, 한 번만 보낼 수 있습니다.`))) return;
         btn.disabled = true;
@@ -3544,7 +3867,7 @@ function personCard(m, target) {
                            : `${m.nickname} 님의 알림함으로 참여 권유를 보냈습니다.`);
         } catch (e) {
           if (e.code === 'already_invited') { m.invited = true; done(); }
-          else { btn.disabled = false; btn.textContent = '✉ 참여 권유'; }
+          else { btn.disabled = false; btn.textContent = '참여 권유'; }
           toast(e.message);
         }
       };
@@ -3632,6 +3955,66 @@ async function viewMe() {
       toast('저장했습니다. 추천에 바로 반영됩니다.');
     } catch (e) { toast(e.message); }
   };
+
+  /* 회원 정보 수정: 이름·전화번호·학과. 저장하려면 현재 비밀번호가 필요하다 (서버가 확인한다) */
+  const acc = root.querySelector('[data-account]');
+  const deptSel = acc.querySelector('[data-account-dept]');
+  const preview = acc.querySelector('[data-display-name]');
+  fillDeptSelect(deptSel);
+  if (state.me.is_admin) {   /* 관리자는 소속 학과가 없어도 된다 */
+    deptSel.required = false;
+    deptSel.options[0].textContent = '없음';
+  }
+  const showPreview = () => {
+    preview.textContent = state.me.is_admin ? acc.elements.name.value.trim()   /* 관리자는 이름 그대로 */
+      : displayName(acc.elements.name.value, acc.elements.student_no.value) || '···';
+  };
+  try {
+    const a = await api('/api/account');
+    acc.elements.student_no.value = a.student_no;
+    acc.elements.email.value = a.email || '없음';
+    acc.elements.name.value = a.name;
+    acc.elements.phone.value = a.phone;
+    deptSel.value = a.department_id ? String(a.department_id) : '';
+  } catch (e) { toast(e.message); }
+  showPreview();
+  acc.elements.name.oninput = showPreview;
+
+  acc.onsubmit = async ev => {
+    ev.preventDefault();
+    const v = formValues(acc);
+    const btn = acc.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      const out = await api('/api/account', { method: 'PUT',
+        body: JSON.stringify({ current_password: acc.elements.current_password.value, name: v.name,
+                               phone: v.phone, department_id: Number(v.department_id) || 0 }) });
+      state.me = { ...state.me, ...out.user };   /* 알림 수 같은 /api/me 의 다른 값은 그대로 둔다 */
+      paintChrome();
+      root.querySelector('[data-who]').textContent =
+        `${state.me.nickname} · ${state.me.department_name || '관리자'}`;
+      acc.elements.current_password.value = '';
+      toast(`저장했습니다. 게시판에는 ${state.me.nickname} 으로 보입니다.`);
+    } catch (e) { toast(e.message); }
+    btn.disabled = false;
+  };
+
+  /* 비밀번호 변경 */
+  const pw = root.querySelector('[data-password]');
+  pw.onsubmit = async ev => {
+    ev.preventDefault();
+    const f = pw.elements;
+    if (f.new_password.value !== f.new_password2.value) return toast('새 비밀번호 두 칸이 서로 다릅니다.');
+    const btn = pw.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await api('/api/account/password', { method: 'PUT',
+        body: JSON.stringify({ current_password: f.current_password.value, new_password: f.new_password.value }) });
+      pw.reset();
+      toast('비밀번호를 바꿨습니다.');
+    } catch (e) { toast(e.message); }
+    btn.disabled = false;
+  };
 }
 
 /* ══════════════════════════════════════════════════ AI 구조 소개 */
@@ -3664,15 +4047,16 @@ async function viewAi() {
 
 /* 방 종류(서버의 subkind) → 화면 이름·아이콘 */
 const CHAT_KIND = {
-  recruit:   { label: '팀원 모집', icon: '🤝' },
-  study:     { label: '그룹 스터디', icon: '📚' },
+  recruit:   { label: '팀원 모집', icon: '팀' },
+  study:     { label: '그룹 스터디', icon: '스터디' },
+  book:      { label: '전공책 거래', icon: '책' },
 };
 const CHAT_POLL_MS = 3000;   /* 방을 보는 동안 새 메시지를 묻는 간격 */
 let chatTimer = null;        /* 방 화면의 새 메시지 확인 타이머 (route() 가 화면을 바꿀 때 멈춘다) */
 
 /* 목록 카드(링크) 안에 넣는 [채팅방으로 이동] 버튼. 카드 자체로 이동하지 않게 막고 채팅방으로 간다 */
 function chatCardButton(href) {
-  const b = el('button', 'chat-chip', '💬 채팅방으로 이동');
+  const b = el('button', 'chat-chip', '채팅방으로 이동');
   b.type = 'button';
   b.onclick = ev => {
     ev.preventDefault();
@@ -3716,9 +4100,9 @@ async function viewChats() {
     root.querySelector('[data-count]').textContent = `(${r.rooms.length})`;
     if (!r.rooms.length) {
       const empty = el('div', 'empty');
-      empty.append(el('p', null, '아직 들어간 모임이 없습니다.'));
+      empty.append(el('p', null, '아직 채팅방이 없습니다.'));
       const links = el('div', 'row chat-empty-links');
-      for (const [href, text] of [['#/recruits/all', '모집글 둘러보기'], ['#/studies', '그룹 스터디 보기']]) {
+      for (const [href, text] of [['#/recruits/all', '공모전 모집 보기'], ['#/studies', '그룹 스터디 보기'], ['#/books', '전공책 장터 보기']]) {
         const a = el('a', 'btn ghost small', text);
         a.href = href;
         links.append(a);
@@ -3734,8 +4118,13 @@ async function viewChats() {
       const main = el('div', 'chat-room-main');
       const top = el('div', 'chat-room-top');
       top.append(el('strong', null, room.title));
-      top.append(el('span', 'tag plain', `${K.label} · ${room.members}명`));
-      if (room.closed) top.append(el('span', 'tag plain', '모집 마감'));
+      if (room.subkind === 'book') {
+        top.append(el('span', 'tag plain', `${K.label} · ${room.peer || '알 수 없음'} 님`));
+        if (room.status !== 'selling') top.append(el('span', BOOK_STATUS_TAG[room.status], BOOK_STATUS[room.status]));
+      } else {
+        top.append(el('span', 'tag plain', `${K.label} · ${room.members}명`));
+        if (room.closed) top.append(el('span', 'tag plain', '모집 마감'));
+      }
       main.append(top, el('p', 'chat-room-last', room.last
         ? `${room.last.nickname}: ${room.last.body}`
         : '아직 대화가 없습니다. 첫 인사를 남겨 보세요.'));
@@ -3750,14 +4139,14 @@ async function viewChats() {
   }
 }
 
-/* #/chats/{recruit|study}/{id} - 채팅방 하나.
+/* #/chats/{recruit|study|book}/{id} - 채팅방 하나 (book = 전공책 판매자와 1:1).
  * 처음에 최근 메시지를 받고, 보는 동안 CHAT_POLL_MS 마다 ?after=(마지막 id) 로 새 메시지만 받는다.
  * 위로 올라가 [이전 대화 더 보기] 를 누르면 ?before=(첫 id) 로 더 오래된 메시지를 앞에 붙인다. */
 async function viewChat(kind, id) {
   markNav('chats');
   setPageTitle('채팅방');
   if (!state.me) return requireLogin('채팅방에 들어가려면 로그인하세요.');
-  if (kind !== 'recruit' && kind !== 'study') { location.hash = '#/chats'; return; }
+  if (!CHAT_KIND[kind]) { location.hash = '#/chats'; return; }
 
   let data;
   try { data = await api(`/api/chats/${kind}/${id}`); }
@@ -3766,8 +4155,8 @@ async function viewChat(kind, id) {
     const box = el('div', 'empty');
     box.append(el('p', null, e.message));
     if (e.code === 'not_member') {
-      const a = el('a', 'btn small', '모임 보러 가기');
-      a.href = kind === 'recruit' ? `#/recruits/${id}` : `#/studies/${id}`;
+      const a = el('a', 'btn small', kind === 'book' ? '전공책 장터로' : '모임 보러 가기');
+      a.href = kind === 'recruit' ? `#/recruits/${id}` : kind === 'book' ? '#/books' : `#/studies/${id}`;
       box.append(a);
     }
     return render(box);
@@ -3781,14 +4170,19 @@ async function viewChat(kind, id) {
   const node = tpl('tpl-chat');
   const root = node.firstElementChild;
   const top = root.querySelector('[data-tags-top]');
-  top.append(el('span', 'tag owner', `${K.icon} ${K.label}`));
-  if (room.closed) top.append(el('span', 'tag plain', '모집 마감'));
+  top.append(el('span', 'tag owner', K.label));
+  if (kind === 'book') top.append(el('span', BOOK_STATUS_TAG[room.status], BOOK_STATUS[room.status]));
+  else if (room.closed) top.append(el('span', 'tag plain', '모집 마감'));
   root.querySelector('[data-title]').textContent = room.title;
-  const ROLE = { mentor: '멘토', mentee: '멘티' };
-  root.querySelector('[data-members]').textContent = `멤버 ${members.length}명 · ` + members.map(m =>
-    m.nickname + (m.is_owner ? (kind === 'recruit' ? ' (글쓴이)' : ' (방장)') : ROLE[m.role] ? ` (${ROLE[m.role]})` : '')).join(', ');
+  const ROLE = { mentor: '멘토', mentee: '멘티', seller: '판매자', buyer: '구매 희망' };
+  const OWNER = { recruit: '글쓴이', study: '방장', book: '판매자' };
+  root.querySelector('[data-members]').textContent = kind === 'book'
+    ? '1:1 대화 · ' + members.map(m => `${m.nickname} (${ROLE[m.role]})`).join(', ')
+    : `멤버 ${members.length}명 · ` + members.map(m =>
+        m.nickname + (m.is_owner ? ` (${OWNER[kind]})` : ROLE[m.role] ? ` (${ROLE[m.role]})` : '')).join(', ');
   const go = root.querySelector('[data-go]');
   go.href = room.link;
+  if (kind === 'book') go.textContent = '책 보기';
 
   const log = root.querySelector('[data-log]');
   const form = root.querySelector('[data-form]');
@@ -3886,7 +4280,7 @@ async function viewChat(kind, id) {
   }
 
   if (data.messages.length) append(data.messages);
-  else log.append(el('p', 'empty small chat-empty', '아직 대화가 없습니다. 첫 인사를 남겨 보세요! 👋'));
+  else log.append(el('p', 'empty small chat-empty', '아직 대화가 없습니다. 첫 인사를 남겨 보세요!'));
   paintOlder(data.has_more);
 
   /* 입력: Enter 보내기, Shift+Enter 줄바꿈. 한글 조합 중(isComposing)의 Enter 는 글자 확정이라 보내지 않는다 */
@@ -3938,7 +4332,7 @@ async function viewChat(kind, id) {
       const r = await api(`/api/chats/${kind}/${id}?after=${lastId}`);
       append(r.messages);
     } catch (e) {
-      if (e.code === 'not_member' || e.code === 'not_found') {   /* 내보내졌거나 모임이 지워졌다 */
+      if (e.code === 'not_member' || e.code === 'not_found') {   /* 내보내졌거나 모임·판매 글이 지워졌다 */
         clearInterval(chatTimer);
         ta.disabled = sendBtn.disabled = true;
         reason.textContent = e.message;
@@ -3978,12 +4372,15 @@ function route() {
   if (parts[0] === 'mine') return viewList(true);
   if (parts[0] === 'reco') return viewReco(parts[1]);
   if (parts[0] === 'recruits' && parts[1] === 'new') return viewRecruitNew(parts[2]);
+  if (parts[0] === 'recruits' && parts[1] && parts[2] === 'edit') return viewRecruitNew(undefined, Number(parts[1]));
   if (parts[0] === 'recruits' && (parts[1] === 'joined' || parts[1] === 'all')) return viewRecruits(parts[1]);
   if (parts[0] === 'recruits' && parts[1]) return viewRecruit(Number(parts[1]));
   if (parts[0] === 'recruits') return viewRecruits('mine');
   if (parts[0] === 'studies' && parts[1] === 'new') return viewStudyNew();
+  if (parts[0] === 'studies' && parts[1] && parts[2] === 'edit') return viewStudyNew(Number(parts[1]));
   if (parts[0] === 'studies' && parts[1] === 'major') return viewStudies('major');
   if (parts[0] === 'studies' && parts[1] === 'reco') return viewStudies('reco', parts[2]);
+  if (parts[0] === 'studies' && parts[1] === 'confirmed') return viewStudies('confirmed');
   if (parts[0] === 'studies' && parts[1]) return viewStudy(Number(parts[1]));
   if (parts[0] === 'studies') return viewStudies('all');
   /* 예전 멘토링 주소 (알림·메일 링크): 멘토링은 그룹 스터디로 옮겼다 */
@@ -3991,6 +4388,7 @@ function route() {
   if (parts[0] === 'books' && parts[1] === 'new') return viewBookNew(0);
   if (parts[0] === 'books' && parts[1] === 'major') return viewBooks('major');
   if (parts[0] === 'books' && parts[1] === 'reco') return viewBooks('reco', parts[2]);
+  if (parts[0] === 'books' && parts[1] === 'mine') return viewBooks('mine');
   if (parts[0] === 'books' && parts[1] && parts[2] === 'edit') return viewBookNew(Number(parts[1]));
   if (parts[0] === 'books' && parts[1]) return viewBook(Number(parts[1]));
   if (parts[0] === 'books') return viewBooks('all');

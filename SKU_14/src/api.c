@@ -7,6 +7,9 @@
  *   POST /api/login                  로그인 (세션 쿠키 발급)
  *   POST /api/logout                 로그아웃 (세션 삭제)
  *   GET  /api/me                     현재 로그인한 사용자 정보
+ *   GET  /api/account                내 정보 수정 화면에 채울 값 (이름·전화번호·학과·학번·이메일)
+ *   PUT  /api/account                이름·전화번호·소속 학과 수정 (현재 비밀번호 필요)
+ *   PUT  /api/account/password       비밀번호 변경 (현재 비밀번호 필요, 다른 기기 로그인은 끊는다)
  *   GET  /api/departments            단과대학별 학과 목록 (가입 화면의 선택 상자용)
  *   POST /api/admin/users            관리자가 회원을 직접 추가 (이메일 인증 없이, 관리자 전용)
  * 그리고 /api/ 가 아닌 모든 GET 요청은 www 폴더의 정적 파일로 응답한다.
@@ -264,13 +267,11 @@ static void write_user(Buf *b, const CurrentUser *u)
 
 /* ------------------------------------------------- 게시판 표시 이름 만들기
  *
- * 실명과 전화번호를 그대로 드러내지 않으면서 같은 학과 안에서 서로를 알아볼 수
- * 있을 만큼만 남긴다.
+ * 표시 이름 = 가운데를 가린 이름 + "_" + 학번 앞에서 셋째·넷째 숫자 (입학 연도 끝 두 자리)
  *
- *   손동권 + 010-9948-9687  ->  손*권_9948
+ *   손동권 + 학번 20241234  ->  손*권_24
  *
- * 이름은 가운데 글자를 가리고(한글은 UTF-8 3바이트이므로 글자 단위로 센다),
- * 전화번호는 가운데 묶음만 쓴다. */
+ * 이름은 글자 단위로 가린다 (한글은 UTF-8 3바이트). 관리자는 학번 없이 이름 그대로 (api_create_admin). */
 
 /* UTF-8 글자 하나의 바이트 수 (첫 바이트의 앞쪽 비트 패턴으로 판단)
  *   0xxxxxxx → 1,  110xxxxx → 2,  1110xxxx → 3,  11110xxx → 4 */
@@ -294,7 +295,6 @@ static void mask_name(const char *name, Buf *out)
     const char *p = name;
     int i;
 
-    /* 1) 바이트열을 글자 단위로 쪼갠다 */
     while (*p && n < 32) {
         int len = utf8_len((unsigned char)*p);
         starts[n] = p;
@@ -302,22 +302,28 @@ static void mask_name(const char *name, Buf *out)
         n++;
         p += len;
     }
-
     if (n <= 1) {
         buf_puts(out, name);
         return;
     }
-
-    /* 2) 첫 글자 + 가운데 글자 수만큼 '*' */
-    buf_add(out, starts[0], (size_t)lens[0]);
-    for (i = 1; i < n - 1; i++)
+    buf_add(out, starts[0], (size_t)lens[0]);       /* 첫 글자 */
+    for (i = 1; i < n - 1; i++)                      /* 가운데 글자 수만큼 '*' */
         buf_putc(out, '*');
-
-    /* 3) 끝 글자 (2글자 이름은 끝 글자를 보이면 전부 보이므로 가린다) */
     if (n == 2)
-        buf_putc(out, '*');        /* 2글자는 끝 글자를 가린다 */
+        buf_putc(out, '*');                          /* 2글자는 끝 글자를 보이면 전부 보이므로 가린다 */
     else
         buf_add(out, starts[n - 1], (size_t)lens[n - 1]);
+}
+
+/* 학생 표시 이름 (손*권_24). 학번이 4자리보다 짧으면 가린 이름만. api.h (cleanup.c 가 예전 이름을 바꿀 때도 쓴다) */
+void display_name_for(const char *name, const char *student_no, Buf *out)
+{
+    buf_reset(out);
+    mask_name(name, out);
+    if (strlen(student_no) >= 4) {
+        buf_putc(out, '_');
+        buf_add(out, student_no + 2, 2);   /* 앞에서 셋째·넷째 숫자 */
+    }
 }
 
 /* 전화번호에서 가운데 묶음을 꺼낸다. 010-9948-9687 -> 9948
@@ -345,18 +351,16 @@ static int phone_middle(const char *phone, char *out, size_t outsz)
     return 1;
 }
 
-/* 표시 이름을 만든다. 성공 시 1. (예: "손*권_9948") */
-static int make_display_name(const char *name, const char *phone, Buf *out)
+/* 표시 이름을 만든다 (예: "손*권_24"). 전화번호 형식도 함께 확인한다 (표시 이름에는 쓰지 않지만 가입 정보로 받는다).
+ * 전화번호가 형식에 맞지 않거나 학번이 4자리보다 짧으면 0. */
+static int make_display_name(const char *name, const char *phone, const char *student_no, Buf *out)
 {
     char mid[8];
 
-    if (!phone_middle(phone, mid, sizeof mid))
+    if (!phone_middle(phone, mid, sizeof mid) || strlen(student_no) < 4)
         return 0;
 
-    buf_reset(out);
-    mask_name(name, out);
-    buf_putc(out, '_');
-    buf_puts(out, mid);
+    display_name_for(name, student_no, out);
     return 1;
 }
 
@@ -665,13 +669,13 @@ static void handle_register(Request *req, Response *res)
         res_error(res, 400, "bad_student_no", "학번은 숫자 4~20자로 입력하세요.");
         goto out;
     }
-    /* 바이트 길이 기준: 한글 2글자 = 6바이트 이상, 40바이트 ≒ 한글 13글자 */
-    if (strlen(name) < 2 || strlen(name) > 40) {
+    /* 바이트 길이 기준: 한글 2글자 = 6바이트 이상, 37바이트 ≒ 한글 12글자 */
+    if (strlen(name) < 2 || strlen(name) > 37) {   /* 표시 이름(이름_24)이 40자 안에 들게 */
         res_error(res, 400, "bad_name", "이름을 입력하세요.");
         goto out;
     }
-    /* 표시 이름은 사용자가 정하지 않는다. 이름과 전화번호로 서버가 만든다. */
-    if (!make_display_name(name, phone, &display)) {
+    /* 표시 이름은 사용자가 정하지 않는다. 이름과 학번으로 서버가 만든다. */
+    if (!make_display_name(name, phone, student_no, &display)) {
         res_error(res, 400, "bad_phone",
                   "전화번호를 010-0000-0000 형식으로 입력하세요.");
         goto out;
@@ -755,7 +759,7 @@ static void handle_register(Request *req, Response *res)
             log_warn("가입한 회원 %s 의 관심 키워드를 저장하지 못했습니다.", student_no);
     }
 
-    /* 201 Created + 만들어진 표시 이름 (화면에서 "손*권_9948 으로 가입되었습니다" 안내) */
+    /* 201 Created + 만들어진 표시 이름 (화면에서 "손*권_24 으로 가입되었습니다" 안내) */
     {
         Buf b;
         buf_init(&b);
@@ -804,11 +808,11 @@ static void handle_admin_user_create(Request *req, Response *res)
         res_error(res, 400, "bad_student_no", "학번은 숫자 4~20자로 입력하세요.");
         goto out;
     }
-    if (strlen(name) < 2 || strlen(name) > 40) {
+    if (strlen(name) < 2 || strlen(name) > 37) {   /* 표시 이름(이름_24)이 40자 안에 들게 */
         res_error(res, 400, "bad_name", "이름을 입력하세요.");
         goto out;
     }
-    if (!make_display_name(name, phone, &display)) {
+    if (!make_display_name(name, phone, student_no, &display)) {
         res_error(res, 400, "bad_phone", "전화번호를 010-0000-0000 형식으로 입력하세요.");
         goto out;
     }
@@ -1008,6 +1012,201 @@ static void handle_me(Request *req, Response *res)
     buf_free(&b);
 }
 
+/* ------------------------------------------------------------ 회원 정보 수정 */
+
+/* 회원 uid 의 비밀번호가 password 와 맞으면 1. 정보·비밀번호를 바꾸기 전에 본인 확인으로 쓴다 */
+static int password_matches(unsigned uid, const char *password)
+{
+    Buf sql;
+    MYSQL_RES *qr;
+    MYSQL_ROW row;
+    int ok = 0;
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT pw_salt, pw_hash FROM users WHERE id = %u", uid);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+    if (!qr)
+        return 0;
+    row = mysql_fetch_row(qr);
+    if (row)
+        ok = pw_verify(row[0], row[1], password);
+    mysql_free_result(qr);
+    return ok;
+}
+
+/* GET /api/account - 내 정보 수정 화면에 채울 값 (본인만). 전화번호는 /api/me 에 싣지 않으므로 여기서만 준다 */
+static void handle_account_get(Request *req, Response *res)
+{
+    CurrentUser u;
+    Buf sql, b;
+    MYSQL_RES *qr;
+    MYSQL_ROW row;
+
+    if (!auth_require(req, res, &u))
+        return;
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT student_no, name, phone, IFNULL(email, ''), IFNULL(department_id, 0) "
+                  "FROM users WHERE id = %u", u.id);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+    if (!qr || !(row = mysql_fetch_row(qr))) {
+        if (qr)
+            mysql_free_result(qr);
+        res_error(res, 500, "db_error", "회원 정보를 읽을 수 없습니다.");
+        return;
+    }
+    buf_init(&b);
+    buf_putc(&b, '{');
+    json_kv_str(&b, "student_no", row[0]);                     buf_putc(&b, ',');
+    json_kv_str(&b, "name", row[1]);                           buf_putc(&b, ',');
+    json_kv_str(&b, "phone", row[2]);                          buf_putc(&b, ',');
+    json_kv_str(&b, "email", row[3][0] ? row[3] : NULL);       buf_putc(&b, ',');
+    json_kv_int(&b, "department_id", strtoul(row[4], NULL, 10));
+    buf_putc(&b, '}');
+    mysql_free_result(qr);
+    res_json_buf(res, 200, &b);
+    buf_free(&b);
+}
+
+/* PUT /api/account {current_password, name, phone, department_id}
+ * 이름·전화번호·소속 학과를 바꾼다. 표시 이름(손*권_24)은 가입 때처럼 서버가 다시 만든다.
+ * 학번(로그인 아이디)과 인증한 학교 이메일은 바꾸지 않는다. */
+static void handle_account_update(Request *req, Response *res)
+{
+    CurrentUser u;
+    Json *in;
+    const char *name, *phone;
+    unsigned dept_id;
+    Buf sql, display;
+
+    if (!auth_require(req, res, &u))
+        return;
+    in = body_object(req, res);
+    if (!in)
+        return;
+    buf_init(&display);
+
+    if (!password_matches(u.id, json_str(in, "current_password", ""))) {
+        res_error(res, 403, "bad_password", "현재 비밀번호가 맞지 않습니다.");
+        goto out;
+    }
+    name    = json_str(in, "name", "");
+    phone   = json_str(in, "phone", "");
+    dept_id = (unsigned)json_int(in, "department_id", 0);
+
+    /* 가입(handle_register)과 같은 규칙 */
+    if (strlen(name) < 2 || strlen(name) > 37) {   /* 표시 이름(이름_24)이 40자 안에 들게 */
+        res_error(res, 400, "bad_name", "이름을 입력하세요.");
+        goto out;
+    }
+    if (!make_display_name(name, phone, u.student_no, &display)) {
+        res_error(res, 400, "bad_phone", "전화번호를 010-0000-0000 형식으로 입력하세요.");
+        goto out;
+    }
+    if (u.is_admin) {   /* 관리자의 표시 이름은 이름 그대로 (api_create_admin 과 같다) */
+        buf_reset(&display);
+        buf_puts(&display, name);
+    }
+    /* 학생은 소속 학과가 꼭 있어야 한다 (대상 학과 검사에 쓰인다). 관리자는 없어도 된다 */
+    if (dept_id || !u.is_admin) {
+        long long exists;
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT COUNT(*) FROM departments WHERE id = %u", dept_id);
+        exists = db_scalar(sql.data, 0);
+        buf_free(&sql);
+        if (!exists) {
+            res_error(res, 400, "bad_department", "소속 학과를 선택하세요.");
+            goto out;
+        }
+    }
+
+    buf_init(&sql);
+    if (dept_id)
+        db_sqlf(&sql, "UPDATE users SET name = %Q, phone = %Q, nickname = %Q, department_id = %u WHERE id = %u",
+                name, phone, display.data, dept_id, u.id);
+    else
+        db_sqlf(&sql, "UPDATE users SET name = %Q, phone = %Q, nickname = %Q, department_id = NULL WHERE id = %u",
+                name, phone, display.data, u.id);
+    if (!db_exec_buf(&sql)) {
+        buf_free(&sql);
+        res_error(res, 500, "db_error", "회원 정보를 저장하지 못했습니다.");
+        goto out;
+    }
+    buf_free(&sql);
+
+    /* 바뀐 정보를 /api/me 와 같은 형식으로 돌려준다 (화면 위쪽 이름·학과를 바로 고칠 수 있게) */
+    {
+        Buf b;
+        auth_current(req, &u);
+        buf_init(&b);
+        buf_puts(&b, "{\"ok\":true,\"user\":");
+        write_user(&b, &u);
+        buf_putc(&b, '}');
+        res_json_buf(res, 200, &b);
+        buf_free(&b);
+    }
+
+out:
+    buf_free(&display);
+    json_free(in);
+}
+
+/* PUT /api/account/password {current_password, new_password}
+ * 새 솔트로 다시 해시하고, 지금 쓰는 세션을 뺀 다른 기기의 로그인은 모두 끊는다. */
+static void handle_password_change(Request *req, Response *res)
+{
+    CurrentUser u;
+    Json *in;
+    const char *pw;
+    char salt[PW_SALT_HEX_LEN + 1];
+    char hash[PW_HASH_HEX_LEN + 1];
+    char token[SESSION_TOKEN_LEN + 1] = "";
+    Buf sql;
+
+    if (!auth_require(req, res, &u))
+        return;
+    in = body_object(req, res);
+    if (!in)
+        return;
+
+    if (!password_matches(u.id, json_str(in, "current_password", ""))) {
+        res_error(res, 403, "bad_password", "현재 비밀번호가 맞지 않습니다.");
+        goto out;
+    }
+    pw = json_str(in, "new_password", "");
+    if (strlen(pw) < 8) {
+        res_error(res, 400, "weak_password", "새 비밀번호는 8자 이상이어야 합니다.");
+        goto out;
+    }
+    if (password_matches(u.id, pw)) {
+        res_error(res, 400, "same_password", "지금 비밀번호와 다른 비밀번호를 정하세요.");
+        goto out;
+    }
+    if (!random_hex(salt, PW_SALT_HEX_LEN)) {
+        res_error(res, 500, "no_entropy", "보안 처리에 실패했습니다. 잠시 후 다시 시도하세요.");
+        goto out;
+    }
+    pw_hash(salt, pw, hash);
+
+    buf_init(&sql);
+    db_sqlf(&sql, "UPDATE users SET pw_salt = %Q, pw_hash = %Q WHERE id = %u", salt, hash, u.id);
+    if (!db_exec_buf(&sql)) {
+        buf_free(&sql);
+        res_error(res, 500, "db_error", "비밀번호를 저장하지 못했습니다.");
+        goto out;
+    }
+    buf_reset(&sql);
+    req_cookie(req, SESSION_COOKIE, token, sizeof token);
+    db_sqlf(&sql, "DELETE FROM sessions WHERE user_id = %u AND token <> %Q", u.id, token);
+    db_exec_buf(&sql);
+    buf_free(&sql);
+    res_json(res, 200, "{\"ok\":true}");
+
+out:
+    json_free(in);
+}
+
 /* ------------------------------------------------------------ 학과 목록 */
 
 /* GET /api/departments
@@ -1076,6 +1275,9 @@ int route_auth(Request *req, Response *res)
     if (req_is(req, "POST", "/api/login"))    { handle_login(req, res);    return 1; }
     if (req_is(req, "POST", "/api/logout"))   { handle_logout(req, res);   return 1; }
     if (req_is(req, "GET",  "/api/me"))       { handle_me(req, res);       return 1; }
+    if (req_is(req, "GET",  "/api/account"))  { handle_account_get(req, res);    return 1; }
+    if (req_is(req, "PUT",  "/api/account"))  { handle_account_update(req, res); return 1; }
+    if (req_is(req, "PUT",  "/api/account/password")) { handle_password_change(req, res); return 1; }
     if (req_is(req, "GET",  "/api/departments")) { handle_departments(res); return 1; }
     return 0;
 }
@@ -1177,7 +1379,9 @@ static int suspended_blocked(const Request *req, Response *res)
 
     if (!strcmp(req->method, "GET"))
         return 0;
+    /* 비밀번호 변경은 보안 조치라 정지 중에도 할 수 있다 */
     if (req_is(req, "POST", "/api/login") || req_is(req, "POST", "/api/logout") ||
+        req_is(req, "PUT", "/api/account/password") ||
         req_is(req, "POST", "/api/notifications/read-all") ||
         (!strcmp(req->method, "POST") && path_id(req->path, "/api/notifications/", "/read", &nid)) ||
         (!strcmp(req->method, "DELETE") && path_id(req->path, "/api/notifications/", NULL, &nid)))

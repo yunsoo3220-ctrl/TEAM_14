@@ -4,6 +4,7 @@
  * 날짜 비교는 MySQL 의 CURDATE() 를 쓰므로 DB 서버의 날짜 기준이다.
  */
 #include "cleanup.h"
+#include "api.h"       /* display_name_for */
 #include "common.h"
 #include "crawler.h"
 #include "db.h"
@@ -11,6 +12,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CLEANUP_INTERVAL_MS (60u * 60u * 1000u)   /* 1시간 */
 #define NO_DEADLINE_DAYS    60                     /* 마감일을 모르는 학교 공지를 남겨 둘 날 수 (기본값) */
@@ -76,6 +78,102 @@ void cleanup_ensure_schema(void)
         } else {
             log_warn("study_groups 에 department_id 열을 추가하지 못했습니다. sql/21_study_department.sql 을 적용하세요.");
         }
+    }
+
+    /* study_departments: 스터디 대상 학과 여러 개 (sql/24_study_departments.sql 과 같은 내용).
+     * 표를 처음 만들 때만 study_groups.department_id(예전의 학과 하나)를 옮겨 담는다. 그 열은 이제 쓰지 않는다 */
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.tables "
+                  "WHERE table_schema = DATABASE() AND table_name = 'study_departments'", 1) == 0) {
+        if (db_exec("CREATE TABLE study_departments ("
+                    "  group_id      INT UNSIGNED NOT NULL,"
+                    "  department_id INT UNSIGNED NOT NULL,"
+                    "  PRIMARY KEY (group_id, department_id),"
+                    "  KEY ix_study_departments_department (department_id),"
+                    "  CONSTRAINT fk_sdep_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,"
+                    "  CONSTRAINT fk_sdep_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE CASCADE"
+                    ") ENGINE=InnoDB")) {
+            db_exec("INSERT INTO study_departments (group_id, department_id) "
+                    "SELECT id, department_id FROM study_groups WHERE department_id IS NOT NULL");
+            log_info("스터디 대상 학과 표(study_departments)를 만들었습니다.");
+        } else {
+            log_warn("study_departments 표를 만들지 못했습니다. sql/24_study_departments.sql 을 적용하세요.");
+        }
+    }
+
+    /* 학생 표시 이름 = 가운데를 가린 이름_학번 셋째·넷째 숫자 (api.c display_name_for, 예: 손*권_24).
+     * 예전 규칙으로 만든 이름을 바꾼다. 이미 맞으면 건드리지 않으므로 켤 때마다 돌려도 된다. 관리자는 이름 그대로라 빼 둔다 */
+    {
+        MYSQL_RES *qr = db_query("SELECT id, name, student_no, nickname FROM users WHERE role = 'student'");
+        MYSQL_ROW row;
+        int changed = 0;
+
+        if (qr) {
+            while ((row = mysql_fetch_row(qr)) != NULL) {
+                Buf want, sql;
+                buf_init(&want);
+                display_name_for(row[1], row[2], &want);
+                if (strcmp(want.data ? want.data : "", row[3]) != 0) {
+                    buf_init(&sql);
+                    db_sqlf(&sql, "UPDATE users SET nickname = %Q WHERE id = %s", want.data, row[0]);
+                    if (db_exec_buf(&sql))
+                        changed++;
+                    buf_free(&sql);
+                }
+                buf_free(&want);
+            }
+            mysql_free_result(qr);
+        }
+        if (changed > 0)
+            log_info("회원 %d명의 표시 이름을 새 형식(손*권_24)으로 바꿨습니다.", changed);
+    }
+
+    /* study_groups.confirmed_at + study_requests: 참여 신청 → 방장 수락, 정원이 차면 확정 (sql/26_study_requests.sql 과 같은 내용).
+     * 열을 처음 만들 때 이미 정원이 찬 스터디는 확정으로 표시한다 */
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "
+                  "WHERE table_schema = DATABASE() AND table_name = 'study_groups' "
+                  "AND column_name = 'confirmed_at'", 1) == 0) {
+        if (db_exec("ALTER TABLE study_groups ADD COLUMN confirmed_at DATETIME NULL AFTER end_date")) {
+            db_exec("UPDATE study_groups g SET g.confirmed_at = NOW() "
+                    "WHERE (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id) >= g.max_members");
+            log_info("study_groups 에 확정 시각(confirmed_at) 열을 추가했습니다.");
+        } else {
+            log_warn("study_groups 에 confirmed_at 열을 추가하지 못했습니다. sql/26_study_requests.sql 을 적용하세요.");
+        }
+    }
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.tables "
+                  "WHERE table_schema = DATABASE() AND table_name = 'study_requests'", 1) == 0) {
+        if (db_exec("CREATE TABLE study_requests ("
+                    "  group_id   INT UNSIGNED NOT NULL,"
+                    "  user_id    INT UNSIGNED NOT NULL,"
+                    "  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                    "  PRIMARY KEY (group_id, user_id),"
+                    "  KEY ix_study_requests_user (user_id),"
+                    "  CONSTRAINT fk_sreq_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,"
+                    "  CONSTRAINT fk_sreq_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE"
+                    ") ENGINE=InnoDB"))
+            log_info("스터디 참여 신청 표(study_requests)를 만들었습니다.");
+        else
+            log_warn("study_requests 표를 만들지 못했습니다. sql/26_study_requests.sql 을 적용하세요.");
+    }
+
+    /* books.price: 가격 상한을 없애면서 INT UNSIGNED(약 42억)에서 BIGINT UNSIGNED 로 넓힌다 (sql/25_book_price.sql 과 같은 내용) */
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "
+                  "WHERE table_schema = DATABASE() AND table_name = 'books' "
+                  "AND column_name = 'price' AND data_type = 'int'", 0) > 0) {
+        if (db_exec("ALTER TABLE books MODIFY price BIGINT UNSIGNED NOT NULL DEFAULT 0"))
+            log_info("books.price 를 BIGINT 로 넓혔습니다.");
+        else
+            log_warn("books.price 를 넓히지 못했습니다. sql/25_book_price.sql 을 적용하세요.");
+    }
+
+    /* 스터디 정원 상한 8명 (api_study.c STUDY_MAX_MEMBERS). 그보다 큰 정원은 8명으로 줄이되,
+     * 이미 8명보다 많이 모인 스터디는 내보내지 않도록 지금 인원까지만 줄인다 */
+    {
+        long long n = exec_count("UPDATE study_groups g "
+                                 "SET g.max_members = GREATEST(8, (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id)) "
+                                 "WHERE g.max_members > 8");
+        if (n > 0)
+            log_info("정원이 8명보다 큰 스터디 %lld개의 정원을 줄였습니다.", n);
     }
 
     /* users.suspended_until / suspend_reason: 관리자의 회원 정지 (sql/19_suspend.sql 과 같은 내용) */
@@ -221,6 +319,29 @@ void cleanup_ensure_schema(void)
                  "  CONSTRAINT fk_cr_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE"
                  ") ENGINE=InnoDB"))
         log_warn("채팅방 표를 만들지 못했습니다. sql/20_chat.sql 을 적용하세요.");
+
+    /* 전공책 1:1 채팅 (sql/23_book_chat.sql 과 같은 내용): book_chats 표 + room_kind 에 'book' */
+    if (!db_exec("CREATE TABLE IF NOT EXISTS book_chats ("
+                 "  id INT UNSIGNED NOT NULL AUTO_INCREMENT,"
+                 "  book_id INT UNSIGNED NOT NULL,"
+                 "  buyer_id INT UNSIGNED NOT NULL,"
+                 "  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                 "  PRIMARY KEY (id),"
+                 "  UNIQUE KEY uq_book_chats (book_id, buyer_id),"
+                 "  KEY ix_book_chats_buyer (buyer_id),"
+                 "  CONSTRAINT fk_bch_book FOREIGN KEY (book_id) REFERENCES books (id) ON DELETE CASCADE,"
+                 "  CONSTRAINT fk_bch_buyer FOREIGN KEY (buyer_id) REFERENCES users (id) ON DELETE CASCADE"
+                 ") ENGINE=InnoDB"))
+        log_warn("전공책 채팅 표를 만들지 못했습니다. sql/23_book_chat.sql 을 적용하세요.");
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "
+                  "WHERE table_schema = DATABASE() AND table_name IN ('chat_messages', 'chat_reads') "
+                  "AND column_name = 'room_kind' AND column_type LIKE '%''book''%'", 2) < 2) {
+        if (db_exec("ALTER TABLE chat_messages MODIFY room_kind ENUM('recruit','study','book') NOT NULL") &&
+            db_exec("ALTER TABLE chat_reads MODIFY room_kind ENUM('recruit','study','book') NOT NULL"))
+            log_info("채팅방 종류(room_kind)에 전공책 1:1 채팅(book)을 추가했습니다.");
+        else
+            log_warn("채팅방 종류에 book 을 추가하지 못했습니다. sql/23_book_chat.sql 을 적용하세요.");
+    }
 }
 
 int cleanup_backfill_deadlines(void)
@@ -295,7 +416,7 @@ int cleanup_expired(void)
     exec_count("DELETE i FROM invitations i LEFT JOIN study_groups g ON g.id = i.target_id "
                "WHERE i.target_kind = 'study' AND g.id IS NULL");
 
-    /* 채팅방: 방(모집글·스터디)이 지워졌으면 메시지·읽음 표시도 지운다 (방이 두 종류라 외래 키를 걸 수 없다) */
+    /* 채팅방: 방(모집글·스터디·전공책 채팅)이 지워졌으면 메시지·읽음 표시도 지운다 (방이 두 종류라 외래 키를 걸 수 없다) */
     exec_count("DELETE c FROM chat_messages c LEFT JOIN recruits r ON r.id = c.room_id "
                "WHERE c.room_kind = 'recruit' AND r.id IS NULL");
     exec_count("DELETE c FROM chat_messages c LEFT JOIN study_groups g ON g.id = c.room_id "
@@ -304,6 +425,10 @@ int cleanup_expired(void)
                "WHERE c.room_kind = 'recruit' AND r.id IS NULL");
     exec_count("DELETE c FROM chat_reads c LEFT JOIN study_groups g ON g.id = c.room_id "
                "WHERE c.room_kind = 'study' AND g.id IS NULL");
+    exec_count("DELETE c FROM chat_messages c LEFT JOIN book_chats b ON b.id = c.room_id "
+               "WHERE c.room_kind = 'book' AND b.id IS NULL");
+    exec_count("DELETE c FROM chat_reads c LEFT JOIN book_chats b ON b.id = c.room_id "
+               "WHERE c.room_kind = 'book' AND b.id IS NULL");
 
     /* 알림함: 오래된 알림 */
     snprintf(sql, sizeof sql,

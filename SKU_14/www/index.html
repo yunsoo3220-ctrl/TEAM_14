@@ -43,8 +43,6 @@
 <aside class="sidebar" id="sidebar">
   <a class="logo" href="#/posts">
     <span class="logo-mark">서경<b>스터디</b></span>
-    <span class="logo-divider"></span>
-    <span class="logo-text">공모전</span>
   </a>
 
   <nav class="sidenav">
@@ -53,6 +51,12 @@
         <svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
       </span>
       <span class="label">공모전 목록<small>Contests</small></span>
+    </a>
+    <a href="#/recruits/all" data-nav="recruit-browse">
+      <span class="ico" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0111 0"/><path d="M16 8.5h5M18.5 6v5"/></svg>
+      </span>
+      <span class="label">공모전 모집<small>Find a Team</small></span>
     </a>
     <a href="#/studies" data-nav="studies">
       <span class="ico" aria-hidden="true">
@@ -200,6 +204,33 @@
 <!-- ────────────────────────────────────────────── 게시물 상세
      #/posts/{id} (viewDetail). 본문 · 대상 학과 · 자체 모델 관련 학과 · Claude 분석 · 모집글 · 댓글
      hidden 으로 시작하는 카드(data-ml, data-ai)는 데이터가 있을 때만 app.js 가 보인다 -->
+<!-- 게시물 수정 (관리자). 공모전 상세의 본문 카드 아래쪽에 펼치는 상자로 붙는다 (app.js 의 mountPostEditor).
+     대상 학과는 그 아래의 "대상 학과 지정" 상자에서 따로 고친다 -->
+<template id="tpl-post-edit">
+  <details class="dept-editor post-editor">
+    <summary>게시물 수정 (관리자)</summary>
+    <form data-form class="stack-sm">
+      <label><span>제목</span><input name="title" required></label>
+      <div class="form-grid">
+        <label><span>종류</span>
+          <select name="kind">
+            <option value="contest">공모전</option>
+            <option value="hackathon">해커톤</option>
+            <option value="etc">기타</option>
+          </select>
+        </label>
+        <label><span>주최</span><input name="host" placeholder="선택"></label>
+        <label><span>마감일</span><input name="deadline" type="date"></label>
+        <label><span>모집 인원 <small>0 = 미정</small></span><input name="need_people" type="number" min="0" max="1000" value="0"></label>
+      </div>
+      <label><span>원본 링크</span><input name="source_url" type="url" placeholder="선택"></label>
+      <label><span>내용</span><textarea name="body" rows="8" required></textarea></label>
+      <p class="muted small">제목이나 내용을 바꾸면 AI 요약·학과 분석을 새로 합니다.</p>
+      <div class="row"><button type="submit">저장</button></div>
+    </form>
+  </details>
+</template>
+
 <template id="tpl-detail">
   <div class="stack">
     <a class="back" href="#/posts">← 목록으로</a>
@@ -275,7 +306,8 @@
 
 <!-- ────────────────────────────────────────────── 내 모집 관리 (팀원 모집글)
      tpl-recruits: 목록, tpl-recruit-new: 글쓰기 (#/recruits/new), tpl-recruit: 상세 (#/recruits/{id})
-     목록의 탭(data-tabs): 내가 쓴 모집글 #/recruits · 참여 중인 팀 #/recruits/joined · 모집글 둘러보기 #/recruits/all
+     목록의 탭(data-tabs): 내가 쓴 모집글 #/recruits · 참여 중인 팀 #/recruits/joined.
+     공모전 모집 #/recruits/all (다른 회원의 모집글 둘러보기) 은 같은 템플릿을 탭 없이 쓰고 사이드바에 따로 있다
      필터(data-filters)는 둘러보기 탭에서만 보인다 -->
 <template id="tpl-recruits">
   <div class="stack">
@@ -308,7 +340,7 @@
 
 <template id="tpl-recruit-new">
   <div class="stack">
-    <a class="back" href="#/recruits">← 내 모집 관리</a>
+    <a class="back" href="#/recruits">← 모집글</a>
     <section class="card">
       <div class="card-head"><h2>모집글 쓰기</h2></div>
       <form data-form class="stack-sm">
@@ -333,7 +365,7 @@
 <template id="tpl-recruit">
   <div class="stack">
     <!-- 돌아갈 곳은 app.js 가 정한다: 내 글·내 팀이면 내 모집 관리, 아니면 연결된 공모전 -->
-    <a class="back" href="#/recruits/all" data-back>← 모집글 둘러보기</a>
+    <a class="back" href="#/recruits/all" data-back>← 공모전 모집</a>
     <article class="card post">
       <div class="post-head">
         <div class="item-top" data-tags-top></div>
@@ -412,9 +444,11 @@
       <div class="card-head"><h2>스터디 만들기</h2></div>
       <form data-form class="stack-sm">
         <label><span>스터디 이름</span><input name="name" maxlength="100" required placeholder="예) 정보처리기사 실기 스터디"></label>
-        <label><span>정원</span><input name="max_members" type="number" min="2" max="50" value="6" required></label>
-        <label><span>대상 학과 <small>선택 · 그 학과 학생의 '내 학과 대상' 탭에 보입니다</small></span>
-          <select name="department_id" data-dept><option value="">학과 무관</option></select></label>
+        <label><span>정원 <small>2~8명</small></span><input name="max_members" type="number" min="2" max="8" value="6" required></label>
+        <fieldset class="deptbox">
+          <legend>대상 학과 <small>여러 개 고를 수 있음 · 체크한 학과 학생만 참여할 수 있습니다 · 비워 두면 학과 무관</small></legend>
+          <div data-dept-checks class="dept-grid"></div>
+        </fieldset>
         <label><span>종료일 <small>선택 · 이날이 지나면 스터디가 자동으로 삭제됩니다</small></span><input name="end_date" type="date"></label>
         <label><span>소개 <small>선택</small></span><textarea name="description" rows="5" maxlength="1000"
           placeholder="무엇을 공부하는지, 모이는 요일·방식(온라인/대면), 멘토·멘티를 둘 계획인지 적어 주세요."></textarea></label>
@@ -451,7 +485,7 @@
     <section class="card" data-add hidden>
       <div class="card-head"><h2>멤버 추가 <small class="muted">방장</small></h2></div>
       <form data-search class="study-search">
-        <input name="q" placeholder="표시 이름 또는 학과로 찾기 (예: 김*수, 컴퓨터)" autocomplete="off">
+        <input name="q" placeholder="표시 이름 또는 학과로 찾기 · 비우고 찾으면 전체 (예: 김*수, 컴퓨터)" autocomplete="off">
         <select name="role">
           <option value="member">일반 멤버로</option>
           <option value="mentor">멘토로</option>
@@ -484,7 +518,6 @@
           <select data-f="status">
             <option value="on">판매 중인 책</option>
             <option value="all">판매 완료 포함</option>
-            <option value="mine">내 판매 글</option>
           </select>
         </label>
         <label><span>정렬</span>
@@ -516,11 +549,11 @@
           <div class="row">
             <label class="btn ghost small photo-btn">
               <input type="file" accept="image/*" capture="environment" data-camera hidden>
-              📷 카메라로 찍기
+              카메라로 찍기
             </label>
             <label class="btn ghost small photo-btn">
               <input type="file" accept="image/jpeg,image/png,image/webp,image/*" multiple data-gallery hidden>
-              🖼 앨범에서 고르기
+              앨범에서 고르기
             </label>
           </div>
           <p class="muted small">표지, 뒷면, 필기한 쪽을 찍어 두면 사는 사람이 상태를 알기 쉽습니다.</p>
@@ -532,7 +565,7 @@
         </div>
         <div class="grid-2">
           <label><span>학과 <small>선택</small></span><select name="department_id" data-dept><option value="">정하지 않음</option></select></label>
-          <label><span>가격 (원) <small>0원 = 나눔</small></span><input name="price" type="number" min="0" max="1000000" step="500" required placeholder="예) 15000"></label>
+          <label><span>가격 (원) <small>0원 = 나눔</small></span><input name="price" type="number" min="0" max="9007199254740991" step="1" required placeholder="예) 15000"></label>
         </div>
         <div>
           <span class="field-label">책 상태</span>
@@ -587,7 +620,7 @@
           <option value="reserved">예약 중</option>
           <option value="sold">판매 완료</option>
         </select>
-        <a class="btn ghost small" data-edit>✏ 글 수정</a>
+        <a class="btn ghost small" data-edit>글 수정</a>
         <button class="ghost small danger" data-delete>삭제</button>
       </div>
     </article>
@@ -840,6 +873,44 @@
         </div>
       </form>
     </section>
+
+    <!-- 회원 정보 수정: 이름·학번으로 표시 이름을 다시 만든다. 학번·이메일은 바꿀 수 없다 -->
+    <section class="card">
+      <div class="card-head">
+        <h2>회원 정보 수정</h2>
+      </div>
+      <form data-account class="stack-sm">
+        <div class="form-grid">
+          <label><span>학번 <small>로그인 아이디 · 바꿀 수 없음</small></span><input name="student_no" disabled></label>
+          <label><span>학교 이메일 <small>바꿀 수 없음</small></span><input name="email" disabled></label>
+          <label><span>이름</span><input name="name" maxlength="13" autocomplete="name" required></label>
+          <label><span>전화번호</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="010-0000-0000" required></label>
+        </div>
+        <label><span>소속 학과</span><select name="department_id" data-account-dept required><option value="">선택하세요</option></select></label>
+        <p class="muted small">게시판에 보이는 이름(<b data-display-name></b>)은 이름과 학번(입학 연도 두 자리)으로 다시 만들어집니다.</p>
+        <label><span>현재 비밀번호 <small>본인 확인</small></span><input name="current_password" type="password" autocomplete="current-password" required></label>
+        <div class="row">
+          <button type="submit">정보 저장</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>비밀번호 변경</h2>
+      </div>
+      <form data-password class="stack-sm">
+        <label><span>현재 비밀번호</span><input name="current_password" type="password" autocomplete="current-password" required></label>
+        <div class="form-grid">
+          <label><span>새 비밀번호 <small>8자 이상</small></span><input name="new_password" type="password" minlength="8" autocomplete="new-password" required></label>
+          <label><span>새 비밀번호 확인</span><input name="new_password2" type="password" minlength="8" autocomplete="new-password" required></label>
+        </div>
+        <p class="muted small">바꾸면 지금 이 기기를 뺀 다른 기기의 로그인은 끊어집니다.</p>
+        <div class="row">
+          <button type="submit">비밀번호 변경</button>
+        </div>
+      </form>
+    </section>
   </div>
 </template>
 
@@ -915,7 +986,7 @@
         <div class="namecard">
           <span class="namecard-label">게시판에 표시될 이름</span>
           <b data-preview>···</b>
-          <span class="namecard-note">이름과 전화번호로 자동으로 만들어집니다. 실명·전화번호·이메일은 공개되지 않습니다.</span>
+          <span class="namecard-note">이름(가운데는 *)과 학번 앞에서 셋째·넷째 숫자로 자동으로 만들어집니다 (예: 손*권_24). 실명·전화번호·이메일은 공개되지 않습니다.</span>
         </div>
 
         <details class="auth-optional">
@@ -952,7 +1023,7 @@
         <div class="form-grid">
           <label><span>학번</span><input name="student_no" inputmode="numeric" required placeholder="예) 2025123456"></label>
           <label><span>이름</span><input name="name" required></label>
-          <label><span>전화번호 <small>표시 이름을 만듭니다</small></span><input name="phone" required placeholder="010-0000-0000"></label>
+          <label><span>전화번호</span><input name="phone" required placeholder="010-0000-0000"></label>
           <label><span>학과</span><select name="department_id" data-dept required><option value="">학과 선택</option></select></label>
           <label><span>비밀번호 <small>8자 이상</small></span><input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
           <label><span>학교 이메일 <small>선택 · 참여 권유 메일용</small></span><input name="email" type="email" placeholder="아이디@skuniv.ac.kr"></label>
@@ -1078,8 +1149,9 @@
 </template>
 
 <!-- ────────────────────────────────────────────── 채팅방
-     tpl-chats: 내 채팅방 목록 (#/chats), tpl-chat: 방 하나 (#/chats/{recruit|study}/{id})
-     방 = 내가 들어간 팀원 모집 팀 · 그룹 스터디. 모임에 들어가면 저절로 생긴다 -->
+     tpl-chats: 내 채팅방 목록 (#/chats), tpl-chat: 방 하나 (#/chats/{recruit|study|book}/{id})
+     방 = 내가 들어간 팀원 모집 팀 · 그룹 스터디 (모임에 들어가면 저절로 생긴다)
+          + 전공책 판매자와의 1:1 대화 (책 상세의 [판매자와 채팅하기]) -->
 <template id="tpl-chats">
   <div class="stack">
     <section class="card">
@@ -1087,7 +1159,7 @@
         <h2>채팅방 <span data-count class="muted"></span></h2>
       </div>
       <div data-list class="chat-rooms"></div>
-      <p class="muted small">팀원 모집 팀이나 그룹 스터디에 들어가면 그 모임의 채팅방이 여기에 생깁니다.</p>
+      <p class="muted small">팀원 모집 팀이나 그룹 스터디에 들어가면 그 모임의 채팅방이 여기에 생깁니다. 전공책 장터에서 판매자와 나눈 1:1 대화도 여기에 모입니다.</p>
     </section>
   </div>
 </template>

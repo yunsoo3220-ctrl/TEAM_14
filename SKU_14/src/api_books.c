@@ -37,7 +37,8 @@
 #define BOOK_LIST_MAX     200               /* 목록 최대 개수 */
 #define BOOK_PHOTO_MAX    5                 /* 한 권에 올릴 수 있는 사진 수 */
 #define BOOK_PHOTO_B64MAX (1400 * 1024)     /* 사진 한 장의 base64 길이 상한 (원본 약 1MB) */
-#define BOOK_PRICE_MAX    1000000           /* 가격 상한 (원) */
+#define BOOK_PRICE_MAX    9007199254740991LL   /* 가격 상한 (원) = 2^53 - 1. 브라우저(JavaScript)가 정확히 다룰 수 있는 가장 큰 정수.
+                                                 * 이보다 크면 화면에서 숫자가 뭉개진다. DB 열은 BIGINT UNSIGNED */
 #define BOOK_TRADE_MAX    600               /* 거래 장소·가능한 시간 글자 상한 (바이트, 한글 200자) */
 #define BOOK_WISH_MAX     300               /* 희망 거래 시간 글자 상한 (바이트, 한글 100자) */
 
@@ -342,11 +343,36 @@ static void handle_book_list(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 판매 글 쓰기 */
 
+/* 가격 값을 읽는다. 0 ~ BOOK_PRICE_MAX 의 정수면 그 값, 아니면 -1.
+ * json_int 는 long 으로 바로 바꾸는데, 범위를 넘는 실수를 정수로 바꾸면 C 에서 정의되지 않은 동작(오버플로)이라
+ * 범위를 먼저 확인한다. 숫자 대신 "15000" 같은 문자열이 와도 받는다. */
+static long long read_price(const Json *v)
+{
+    double d;
+    char *end;
+
+    if (!v)
+        return -1;
+    if (v->type == JS_NUM) {
+        d = v->num;
+    } else if (v->type == JS_STR && v->str[0]) {
+        d = strtod(v->str, &end);
+        if (*end)
+            return -1;
+    } else {
+        return -1;
+    }
+    /* d != d 는 NaN. 범위 밖이거나 소수면 받지 않는다 */
+    if (d != d || d < 0 || d > (double)BOOK_PRICE_MAX || d != (double)(long long)d)
+        return -1;
+    return (long long)d;
+}
+
 /* 판매 글 쓰기·고치기에서 받는 값 (book_input_read 가 채우고 book_input_free 가 푼다) */
 typedef struct {
     char *title, *author, *course, *desc, *trade[3];
     const char *cond;
-    long price;
+    long long price;   /* -1 = 잘못된 값 (음수·소수·너무 큰 수·숫자 아님) */
     unsigned dept_id;
     int nphotos;                          /* 사진 수 (순서 = 저장할 순서, 0 번이 대표) */
     unsigned keep[BOOK_PHOTO_MAX];        /* 0 이 아니면 이미 있는 사진 id (고치기에서만) */
@@ -379,7 +405,7 @@ static int book_input_read(const Json *in, Response *res, BookInput *bi, int all
     bi->author = str_dup(json_str(in, "author", ""));
     bi->course = str_dup(json_str(in, "course", ""));
     bi->desc   = str_dup(json_str(in, "description", ""));
-    bi->price  = json_int(in, "price", -1);
+    bi->price  = read_price(json_get(in, "price"));
     bi->dept_id = (unsigned)json_int(in, "department_id", 0);
     bi->cond = condition_code(json_str(in, "condition", "good"));
     if (!bi->title || !bi->author || !bi->course || !bi->desc) {
@@ -407,8 +433,8 @@ static int book_input_read(const Json *in, Response *res, BookInput *bi, int all
     utf8_cut(bi->title, 600);
     if (!read_trade(in, res, bi->trade))
         return 0;
-    if (bi->price < 0 || bi->price > BOOK_PRICE_MAX) {
-        res_error(res, 400, "bad_price", "가격은 0~1,000,000원으로 정하세요.");
+    if (bi->price < 0) {
+        res_error(res, 400, "bad_price", "가격은 0원부터 9,007,199,254,740,991원까지의 정수로 정하세요.");
         return 0;
     }
     if (!bi->cond) {
@@ -603,7 +629,8 @@ out:
 
 /* GET /api/books/{id}
  * 응답: {"book":{목록과 같은 형태},"description":"전체 설명","photos":[사진 id, ...],
- *        "can_manage":bool,"comments":[{id,body,created_at,author_nickname,author_department,author_id}, ...]} */
+ *        "can_manage":bool, "my_chat_id":N, "chat_count":N (로그인했을 때),
+ *        "comments":[{id,body,created_at,author_nickname,author_department,author_id}, ...]} */
 static void handle_book_detail(Request *req, Response *res, unsigned bid)
 {
     CurrentUser u;
@@ -651,6 +678,22 @@ static void handle_book_detail(Request *req, Response *res, unsigned bid)
 
     buf_putc(&b, ',');
     json_kv_bool(&b, "can_manage", u.id && book_manage_ok(bid, &u) == 1);
+
+    /* 1:1 채팅 (api_chat.c): 사는 사람은 이미 연 방 id (없으면 0), 판매자는 이 책에 온 대화 수 */
+    if (u.id) {
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT IFNULL(MAX(id), 0) FROM book_chats WHERE book_id = %u AND buyer_id = %u", bid, u.id);
+        buf_putc(&b, ',');
+        json_kv_int(&b, "my_chat_id", db_scalar(sql.data, 0));
+        buf_free(&sql);
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT COUNT(*) FROM book_chats c JOIN books k ON k.id = c.book_id "
+                      "WHERE c.book_id = %u AND k.seller_id = %u AND EXISTS (SELECT 1 FROM chat_messages m "
+                      "WHERE m.room_kind = 'book' AND m.room_id = c.id)", bid, u.id);
+        buf_putc(&b, ',');
+        json_kv_int(&b, "chat_count", db_scalar(sql.data, 0));
+        buf_free(&sql);
+    }
 
     /* 문의 댓글 (오래된 순) */
     buf_puts(&b, ",\"comments\":[");

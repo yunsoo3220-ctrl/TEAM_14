@@ -187,8 +187,6 @@ svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width:
   color: transparent;
   font-weight: 700;
 }
-.logo-divider { width: 1px; height: 16px; background: var(--border-strong); }
-.logo-text { font-size: 14px; color: var(--text-2); font-weight: 500; }
 
 /* 메뉴: 모서리 없는 54px 줄. 마우스를 올리거나 선택되면 파랑으로 꽉 채운다 */
 .sidenav { padding: 0; display: flex; flex-direction: column; }
@@ -1198,6 +1196,14 @@ button.pick.on::before { content: "✓ "; }
   grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 14px;
 }
+/* 내 모집 관리에서 모집글 / 그룹 스터디 묶음 제목 (한 줄을 다 쓴다) */
+.recruit-grid .grid-label {
+  grid-column: 1 / -1;
+  margin: 8px 2px -4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-2);
+}
 .recruit-card {
   display: flex;
   flex-direction: column;
@@ -1307,6 +1313,7 @@ button.danger { color: var(--danger); }
 .tag.mentor { background: var(--ok-soft);      color: var(--ok); }
 .tag.mentee { background: var(--k-hack-soft);  color: var(--k-hack); }
 .tag.owner  { background: var(--brand-soft);   color: var(--brand-dark); }
+.tag.confirmed { background: var(--brand); color: #fff; }   /* 확정된 그룹 (정원이 차서 멤버가 고정됨) */
 
 /* 칸 버튼으로 하나 고르기 (전공책 상태 등) */
 .role-pick {
@@ -1761,6 +1768,7 @@ input.invalid, textarea.invalid, select.invalid { border-color: var(--danger); b
   font-size: 34px;
 }
 .book-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.book-thumb .no-photo { font-size: 13px; }
 .book-thumb .photo-n {
   position: absolute; right: 8px; bottom: 8px;
   padding: 2px 8px; border-radius: 999px;
@@ -1775,7 +1783,7 @@ input.invalid, textarea.invalid, select.invalid { border-color: var(--danger); b
 .book-thumb .book-score { position: absolute; left: 8px; top: 8px; box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--border); }
 .book-body .reco-terms { margin-top: 6px; padding: 6px 8px; gap: 4px; font-size: 12px; }
 .book-card .item-meta { margin-top: auto; padding-top: 8px; }
-.book-price { margin: 8px 0 0; font-size: 22px; font-weight: 800; letter-spacing: -.4px; color: var(--text); }
+.book-price { margin: 8px 0 0; font-size: 22px; font-weight: 800; letter-spacing: -.4px; color: var(--text); overflow-wrap: anywhere; }   /* 아주 큰 가격도 카드 밖으로 넘치지 않게 */
 .book-price.free { color: var(--ok); }
 
 /* 판매 글 쓰기: 사진 고르기 */
@@ -1854,7 +1862,7 @@ input.invalid, textarea.invalid, select.invalid { border-color: var(--danger); b
 .chat-room-icon {
   display: grid; place-items: center; flex: none;
   width: 42px; height: 42px; border-radius: 8px;
-  background: var(--brand-soft); font-size: 20px;
+  background: var(--brand-soft); font-size: 12px; font-weight: 700; color: var(--brand);
 }
 .chat-room-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .chat-room-top { display: flex; align-items: center; gap: 8px; min-width: 0; }

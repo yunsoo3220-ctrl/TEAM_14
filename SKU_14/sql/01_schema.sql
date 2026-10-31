@@ -292,9 +292,10 @@ CREATE TABLE study_groups (
   owner_id    INT UNSIGNED  NOT NULL,                 -- 방장
   name        VARCHAR(100)  NOT NULL,                 -- 스터디 이름
   description VARCHAR(1000) NOT NULL DEFAULT '',
-  max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
-  department_id INT UNSIGNED NULL,                    -- 대상 학과 (NULL = 학과 무관). "내 학과 대상" 탭이 이 값으로 거른다
+  max_members SMALLINT      NOT NULL DEFAULT 6,       -- 정원 (2~8, 서버에서 검사)
+  department_id INT UNSIGNED NULL,                    -- 예전의 대상 학과 하나. 지금은 study_departments 를 쓴다 (예전 DB 와 맞추려고 남김)
   end_date    DATE          NULL,                    -- 종료일 (지나면 자동 삭제, NULL = 없음)
+  confirmed_at DATETIME     NULL,                    -- 정원이 차서 확정된 시각 (NULL = 모집 중). 확정되면 멤버가 바뀌지 않는다
   kind        ENUM('study','mentoring') NOT NULL DEFAULT 'study',  -- 늘 'study' (멘토링 메뉴는 없앴다. 예전 DB 와 맞추려고 남김)
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -302,6 +303,27 @@ CREATE TABLE study_groups (
   KEY ix_study_groups_department (department_id),
   CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT fk_sg_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- 스터디 대상 학과 (여러 개). 행이 없으면 학과 무관, 있으면 그 학과 학생만 참여할 수 있다
+CREATE TABLE study_departments (
+  group_id      INT UNSIGNED NOT NULL,
+  department_id INT UNSIGNED NOT NULL,
+  PRIMARY KEY (group_id, department_id),
+  KEY ix_study_departments_department (department_id),
+  CONSTRAINT fk_sdep_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sdep_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 스터디 참여 신청 (방장이 수락하면 study_members 로 옮기고 지운다)
+CREATE TABLE study_requests (
+  group_id   INT UNSIGNED NOT NULL,
+  user_id    INT UNSIGNED NOT NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (group_id, user_id),
+  KEY ix_study_requests_user (user_id),
+  CONSTRAINT fk_sreq_group FOREIGN KEY (group_id) REFERENCES study_groups (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sreq_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- 스터디 멤버와 역할 (member = 일반, mentor = 멘토, mentee = 멘티)
@@ -325,7 +347,7 @@ CREATE TABLE books (
   author         VARCHAR(100)  NOT NULL DEFAULT '',     -- 저자·출판사
   course         VARCHAR(100)  NOT NULL DEFAULT '',     -- 쓰는 과목 이름
   department_id  INT UNSIGNED  NULL,                    -- 관련 학과 (없으면 NULL)
-  price          INT UNSIGNED  NOT NULL DEFAULT 0,      -- 가격(원), 0 = 나눔
+  price          BIGINT UNSIGNED NOT NULL DEFAULT 0,    -- 가격(원), 0 = 나눔 (상한은 서버가 2^53-1 로 검사)
   book_condition ENUM('new','good','fair','poor') NOT NULL DEFAULT 'good',  -- 새 책 / 깨끗함 / 필기 조금 / 필기 많음
   description    VARCHAR(2000) NOT NULL DEFAULT '',
   trade_places   VARCHAR(200)  NOT NULL DEFAULT '',     -- 원하는 학교 장소 (예: 중앙도서관 · 정문)
@@ -413,11 +435,25 @@ CREATE TABLE recruit_members (
 ) ENGINE=InnoDB;
 
 
--- 채팅방 메시지: 방 = 모집글 팀(recruit) 또는 그룹 스터디(study). 방이 지워지면 자동 정리(cleanup.c)가 지운다
+-- 전공책 1:1 채팅방: (판매 글, 사는 사람) 하나가 방 하나. 판매자는 books.seller_id
+CREATE TABLE book_chats (
+  id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  book_id    INT UNSIGNED NOT NULL,
+  buyer_id   INT UNSIGNED NOT NULL,                   -- 채팅을 건 사람 (판매자 자신은 안 됨)
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_book_chats (book_id, buyer_id),       -- 한 책에 한 사람당 방 하나
+  KEY ix_book_chats_buyer (buyer_id),
+  CONSTRAINT fk_bch_book  FOREIGN KEY (book_id)  REFERENCES books (id) ON DELETE CASCADE,
+  CONSTRAINT fk_bch_buyer FOREIGN KEY (buyer_id) REFERENCES users (id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+
+-- 채팅방 메시지: 방 = 모집글 팀(recruit), 그룹 스터디(study), 전공책 1:1(book). 방이 지워지면 자동 정리(cleanup.c)가 지운다
 CREATE TABLE chat_messages (
   id         INT UNSIGNED  NOT NULL AUTO_INCREMENT,
-  room_kind  ENUM('recruit','study') NOT NULL,         -- recruit = 모집글 팀, study = 그룹 스터디
-  room_id    INT UNSIGNED  NOT NULL,                   -- recruits.id 또는 study_groups.id
+  room_kind  ENUM('recruit','study','book') NOT NULL,  -- recruit = 모집글 팀, study = 그룹 스터디, book = 전공책 1:1
+  room_id    INT UNSIGNED  NOT NULL,                   -- recruits.id, study_groups.id 또는 book_chats.id
   user_id    INT UNSIGNED  NOT NULL,                   -- 쓴 회원
   body       VARCHAR(1000) NOT NULL,
   created_at DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -429,7 +465,7 @@ CREATE TABLE chat_messages (
 
 -- 채팅방 읽음 표시: (방, 회원) 이 마지막으로 읽은 메시지 id (안 읽은 수 = 이보다 큰 남의 메시지 수)
 CREATE TABLE chat_reads (
-  room_kind    ENUM('recruit','study') NOT NULL,
+  room_kind    ENUM('recruit','study','book') NOT NULL,
   room_id      INT UNSIGNED NOT NULL,
   user_id      INT UNSIGNED NOT NULL,
   last_read_id INT UNSIGNED NOT NULL DEFAULT 0,       -- 이 id 까지 읽었다

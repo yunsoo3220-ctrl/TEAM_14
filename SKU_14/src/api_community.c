@@ -8,6 +8,7 @@
  *   GET    /api/recruits                   모집글 목록 ?status=open|all&tag=&post_id=&sort=new|match
  *                                           ?mine=1 이면 내가 쓰거나 팀원으로 들어간 글만 (마감한 글 포함)
  *   POST   /api/recruits                   모집글 쓰기 (로그인)
+ *   PUT    /api/recruits/{id}              모집글 수정 (작성자·관리자, 쓰기와 같은 항목)
  *   GET    /api/recruits/{id}              모집글 + 댓글 + 팀원
  *   PUT    /api/recruits/{id}/status       {status:"open"|"closed"} (작성자·관리자)
  *   DELETE /api/recruits/{id}              (작성자·관리자)
@@ -62,6 +63,17 @@ static void utf8_cut(char *s, size_t maxbytes)
     while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80)
         n--;
     s[n] = '\0';
+}
+
+/* UTF-8 글자 수 (strlen 은 바이트 수라 한글 한 글자가 3 으로 센다). 이어지는 바이트(10xxxxxx)는 세지 않는다 */
+static size_t utf8_chars(const char *s)
+{
+    size_t n = 0;
+
+    for (; *s; s++)
+        if (((unsigned char)*s & 0xC0) != 0x80)
+            n++;
+    return n;
 }
 
 /* "YYYY-MM-DD" 형식만 통과, 아니면 NULL (api_admin.c 의 같은 이름 함수와 동일) */
@@ -426,6 +438,10 @@ static void handle_matches(Request *req, Response *res)
 
         if (has_target && invite_member_already(&t, hits[i].id))
             continue;
+        /* 대상 학과가 아닌 회원은 권유해도 참여할 수 없으므로 보여 주지 않는다 */
+        if (has_target && !(strcmp(t.kind, "study") ? recruit_department_ok(t.id, hits[i].id)
+                                                     : study_department_ok(t.id, hits[i].id)))
+            continue;
 
         /* 회원 한 명의 공개 정보. 다섯 번째 열 shared_tags 는
          * "그 회원의 키워드(a) 중 나(o)도 고른 것" 을 자기 조인으로 구한다. */
@@ -643,8 +659,12 @@ static int recruit_tags_save(unsigned rid, const unsigned *ids, int n)
     return ok;
 }
 
-/* POST /api/recruits {title, body, need_people?, deadline?, post_id?, tag_ids?} */
-static void handle_recruit_create(Request *req, Response *res)
+static int recruit_owner_ok(unsigned rid, const CurrentUser *u);
+
+/* POST /api/recruits {title, body, need_people?, deadline?, post_id?, tag_ids?}      (edit_id = 0, 새 글)
+ * PUT  /api/recruits/{id} 같은 항목                                                   (edit_id = 고칠 글, 작성자·관리자)
+ * 쓰기와 수정이 같은 검사를 거치도록 한 함수로 둔다. */
+static void handle_recruit_save(Request *req, Response *res, unsigned edit_id)
 {
     CurrentUser u;
     Json *in;
@@ -657,6 +677,11 @@ static void handle_recruit_create(Request *req, Response *res)
 
     if (!auth_require(req, res, &u))
         return;
+    if (edit_id) {
+        int own = recruit_owner_ok(edit_id, &u);
+        if (own < 0) { res_error(res, 404, "not_found", "모집글이 없습니다."); return; }
+        if (!own)    { res_error(res, 403, "not_allowed", "작성자만 고칠 수 있습니다."); return; }
+    }
     in = body_object(req, res);
     if (!in)
         return;
@@ -674,11 +699,12 @@ static void handle_recruit_create(Request *req, Response *res)
     post_id = (unsigned)json_int(in, "post_id", 0);
     ntags = json_uint_array(json_get(in, "tag_ids"), tag_ids, (int)(sizeof tag_ids / sizeof tag_ids[0]));
 
-    if (strlen(title) < 2 || strlen(title) > 600) {
+    /* 길이 하한은 글자 수로 센다 (바이트로 세면 한글 한 글자가 영문 세 글자로 쳐진다). 상한 600 바이트는 예전 그대로 둔다 */
+    if (utf8_chars(title) < 2 || strlen(title) > 600) {
         res_error(res, 400, "bad_title", "제목을 2자 이상 입력하세요.");
         goto out;
     }
-    if (strlen(body) < 5) {
+    if (!body[0]) {
         res_error(res, 400, "bad_body", "어떤 팀원을 찾는지 내용을 적어 주세요.");
         goto out;
     }
@@ -690,6 +716,22 @@ static void handle_recruit_create(Request *req, Response *res)
         res_error(res, 400, "too_many_tags", "키워드는 8개까지 고를 수 있습니다.");
         goto out;
     }
+    if (deadline) {
+        /* 이미 지난 날짜면 올리자마자 마감된 글이 되므로 받지 않는다 (스터디 종료일과 같은 규칙).
+         * 고칠 때는 원래 마감일을 그대로 두는 것은 괜찮다 (이미 지났어도 다른 항목만 고칠 수 있게) */
+        buf_init(&sql);
+        if (edit_id)
+            db_sqlf(&sql, "SELECT %Q < CURDATE() AND NOT IFNULL((SELECT deadline = %Q FROM recruits WHERE id = %u), 0)",
+                    deadline, deadline, edit_id);
+        else
+            db_sqlf(&sql, "SELECT %Q < CURDATE()", deadline);
+        if (db_scalar(sql.data, 0)) {
+            buf_free(&sql);
+            res_error(res, 400, "bad_deadline", "모집 마감일은 오늘이나 그 뒤로 정하세요.");
+            goto out;
+        }
+        buf_free(&sql);
+    }
     /* 연결할 공모전이 실제로 없으면 연결 없이 저장한다 (외래 키 오류 방지) */
     if (post_id) {
         buf_init(&sql);
@@ -698,6 +740,11 @@ static void handle_recruit_create(Request *req, Response *res)
             post_id = 0;
         buf_free(&sql);
     }
+    /* 대상 학과가 정해진 공모전이면 그 학과 학생만 이 공모전으로 팀을 꾸릴 수 있다 (댓글과 같은 제약) */
+    if (post_id && !u.is_admin && !post_department_ok(post_id, u.department_id)) {
+        res_error(res, 403, "department_not_allowed", "이 공모전의 대상 학과가 아니어서 팀원 모집글을 쓸 수 없습니다.");
+        goto out;
+    }
 
     if (!db_begin()) {
         res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
@@ -705,7 +752,15 @@ static void handle_recruit_create(Request *req, Response *res)
     }
     /* post_id 가 없으면 열 자체를 빼서 NULL 로 저장되게 한다 */
     buf_init(&sql);
-    if (post_id)
+    if (edit_id) {
+        db_sqlf(&sql, "UPDATE recruits SET title = %Q, body = %Q, need_people = %d, deadline = %Q, ",
+                title, body, need, deadline);
+        if (post_id)
+            db_sqlf(&sql, "post_id = %u ", post_id);
+        else
+            buf_puts(&sql, "post_id = NULL ");
+        db_sqlf(&sql, "WHERE id = %u", edit_id);
+    } else if (post_id)
         db_sqlf(&sql, "INSERT INTO recruits (author_id, post_id, title, body, need_people, deadline) "
                       "VALUES (%u, %u, %Q, %Q, %d, %Q)", u.id, post_id, title, body, need, deadline);
     else
@@ -718,7 +773,7 @@ static void handle_recruit_create(Request *req, Response *res)
         goto out;
     }
     buf_free(&sql);
-    rid = db_last_id();
+    rid = edit_id ? edit_id : db_last_id();
     /* 키워드 저장 실패 또는 커밋 실패 시 되돌린다.
      * (|| 단락 평가: 키워드 저장이 실패하면 db_commit 은 아예 불리지 않는다) */
     if (!recruit_tags_save((unsigned)rid, tag_ids, ntags) || !db_commit()) {
@@ -733,7 +788,7 @@ static void handle_recruit_create(Request *req, Response *res)
         buf_puts(&b, "{\"ok\":true,");
         json_kv_int(&b, "id", (long long)rid);
         buf_putc(&b, '}');
-        res_json_buf(res, 201, &b);
+        res_json_buf(res, edit_id ? 200 : 201, &b);
         buf_free(&b);
     }
 
@@ -800,6 +855,18 @@ static void handle_recruit_detail(Request *req, Response *res, unsigned rid)
     row = qr ? mysql_fetch_row(qr) : NULL;
     buf_puts(&b, ",\"body\":");
     json_write_str(&b, row ? row[0] : "");
+    if (qr)
+        mysql_free_result(qr);
+
+    /* 수정 화면에 미리 채울 키워드 번호들 */
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT IFNULL(GROUP_CONCAT(tag_id), '') FROM recruit_tags WHERE recruit_id = %u", rid);
+    qr = db_query_buf(&sql);
+    buf_free(&sql);
+    row = qr ? mysql_fetch_row(qr) : NULL;
+    buf_puts(&b, ",\"tag_ids\":[");
+    buf_puts(&b, row && row[0] ? row[0] : "");   /* GROUP_CONCAT 한 숫자들이라 그대로 배열이 된다 */
+    buf_putc(&b, ']');
     if (qr)
         mysql_free_result(qr);
 
@@ -1052,6 +1119,21 @@ static void handle_recruit_like(Request *req, Response *res, unsigned rid, int o
 
 /* ------------------------------------------------------------ 팀 (팀원으로 받기 · 내보내기) */
 
+int recruit_department_ok(unsigned rid, unsigned uid)
+{
+    Buf sql;
+    long long post_id, dept;
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT IFNULL(post_id, 0) FROM recruits WHERE id = %u", rid);
+    post_id = db_scalar(sql.data, 0);
+    buf_reset(&sql);
+    db_sqlf(&sql, "SELECT IFNULL(department_id, 0) FROM users WHERE id = %u", uid);
+    dept = db_scalar(sql.data, 0);
+    buf_free(&sql);
+    return post_id <= 0 || post_department_ok((unsigned)post_id, (unsigned)dept);
+}
+
 int recruit_team_add(unsigned rid, unsigned uid)
 {
     Buf sql;
@@ -1146,6 +1228,10 @@ static void handle_team_add(Request *req, Response *res, unsigned rid)
     }
     if ((unsigned)author == uid) {
         res_error(res, 400, "is_author", "글쓴이는 이미 팀입니다.");
+        return;
+    }
+    if (!recruit_department_ok(rid, uid)) {
+        res_error(res, 403, "department_not_allowed", "이 공모전의 대상 학과가 아닌 회원은 팀원으로 받을 수 없습니다.");
         return;
     }
 
@@ -1243,7 +1329,7 @@ int route_community(Request *req, Response *res)
     if (req_is(req, "PUT", "/api/profile"))           { handle_profile_put(req, res);   return 1; }
     if (req_is(req, "GET", "/api/members/matches"))   { handle_matches(req, res);       return 1; }
     if (req_is(req, "GET", "/api/recruits"))          { handle_recruit_list(req, res);  return 1; }
-    if (req_is(req, "POST", "/api/recruits"))         { handle_recruit_create(req, res); return 1; }
+    if (req_is(req, "POST", "/api/recruits"))         { handle_recruit_save(req, res, 0); return 1; }
 
     {
         unsigned rid, uid;
@@ -1272,6 +1358,10 @@ int route_community(Request *req, Response *res)
     }
     if (!strcmp(m, "GET") && path_id(req->path, "/api/recruits/", NULL, &id)) {
         handle_recruit_detail(req, res, id);
+        return 1;
+    }
+    if (!strcmp(m, "PUT") && path_id(req->path, "/api/recruits/", NULL, &id)) {
+        handle_recruit_save(req, res, id);
         return 1;
     }
     if (!strcmp(m, "DELETE") && path_id(req->path, "/api/recruits/", NULL, &id)) {

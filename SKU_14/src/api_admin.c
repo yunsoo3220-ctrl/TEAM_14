@@ -2,6 +2,7 @@
  *
  * 이 파일이 담당하는 API (모두 관리자 전용):
  *   POST   /api/posts                        게시물 직접 등록
+ *   PUT    /api/posts/{id}                   게시물 수정 {title, body, host?, source_url?, kind?, deadline?, need_people?}
  *   DELETE /api/posts/{id}                   게시물 삭제
  *   PUT    /api/posts/{id}/departments       대상 학과 다시 체크 {"department_ids":[..]}
  *   GET    /api/notices?status=pending       수집한 학교 공지 목록
@@ -88,6 +89,21 @@ static const char *clean_date(const char *s)
     return s;
 }
 
+/* d("YYYY-MM-DD")가 오늘보다 앞이면 1. 지난 마감일로 공모전을 올리면 올리자마자 마감된 글이 되므로 막는다 */
+static int past_date(const char *d)
+{
+    Buf sql;
+    long long past;
+
+    if (!d)
+        return 0;
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT %Q < CURDATE()", d);
+    past = db_scalar(sql.data, 0);
+    buf_free(&sql);
+    return past > 0;
+}
+
 /* -------------------------------------------------------- 게시물 등록/삭제 */
 
 /* POST /api/posts
@@ -133,6 +149,10 @@ static void handle_post_create(Request *req, Response *res)
      * 특정 학과로 좁히려면 체크해서 보내면 된다. */
     if (need_people < 0 || need_people > 1000)
         need_people = 0;
+    if (past_date(deadline)) {
+        res_error(res, 400, "bad_deadline", "마감일은 오늘이나 그 뒤로 정하세요.");
+        goto out;
+    }
 
     if (!db_begin()) {          /* 트랜잭션 시작 (연결 잠금도 함께) */
         res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
@@ -191,20 +211,43 @@ static void handle_post_delete(Request *req, Response *res, unsigned post_id)
     CurrentUser u;
     Buf sql;
 
+    unsigned long long removed;
+
     if (!auth_require_admin(req, res, &u))
         return;
 
+    if (!db_begin()) {
+        res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
+        return;
+    }
+    /* 학교 공지에서 온 글이면 그 공지를 대기(pending)로 되돌린다. 그래야 다음 [공모전 불러오기] 때 다시 올라온다.
+     * (그대로 두면 게시됨(published) 상태로 남아 수집이 건너뛴다. 마감이 지나 자동 정리된 글은 여기를 거치지 않으므로 다시 올라오지 않는다) */
     buf_init(&sql);
+    db_sqlf(&sql, "UPDATE notices SET status = 'pending', post_id = NULL WHERE post_id = %u", post_id);
+    if (!db_exec_buf(&sql)) {
+        buf_free(&sql);
+        db_rollback();
+        res_error(res, 500, "db_error", "게시물을 삭제할 수 없습니다.");
+        return;
+    }
+    buf_reset(&sql);
     db_sqlf(&sql, "DELETE FROM posts WHERE id = %u", post_id);
     if (!db_exec_buf(&sql)) {
         buf_free(&sql);
+        db_rollback();
         res_error(res, 500, "db_error", "게시물을 삭제할 수 없습니다.");
         return;
     }
     buf_free(&sql);
+    removed = db_affected();   /* 트랜잭션이 연결을 잠그고 있어 다른 스레드의 값이 섞이지 않는다 */
 
-    if (db_affected() == 0) {   /* 지운 행이 없으면 원래 없던 게시물 */
+    if (removed == 0) {   /* 지운 행이 없으면 원래 없던 게시물 */
+        db_rollback();
         res_error(res, 404, "not_found", "게시물이 없습니다.");
+        return;
+    }
+    if (!db_commit()) {
+        res_error(res, 500, "db_error", "삭제를 확정할 수 없습니다.");
         return;
     }
     res_json(res, 200, "{\"ok\":true}");
@@ -418,6 +461,10 @@ static void handle_notice_publish(Request *req, Response *res, unsigned notice_i
     host        = json_str(in, "host", NULL);
     if (need_people < 0 || need_people > 1000)
         need_people = 0;
+    if (past_date(deadline)) {
+        res_error(res, 400, "bad_deadline", "마감일은 오늘이나 그 뒤로 정하세요.");
+        goto out;
+    }
 
     /* 3) 본문은 관리자가 적어 보낸 글 뒤에 공지 원문을 텍스트로 붙인다.
      * 원문 링크는 source_url 에 따로 두고, 원문을 못 받으면 출처만 적는다.
@@ -559,6 +606,96 @@ static void handle_summary(Request *req, Response *res)
     buf_free(&b);
 }
 
+/* PUT /api/posts/{id} {title, body, host?, source_url?, kind?, deadline?, need_people?} (관리자)
+ * 대상 학과는 PUT /api/posts/{id}/departments 로 따로 고친다.
+ * 제목·본문이 바뀌면 예전 글로 만든 AI 분석(요약·추정 마감일·학과 점수)을 지우고 다시 분석한다. */
+static void handle_post_update(Request *req, Response *res, unsigned post_id)
+{
+    CurrentUser u;
+    Json *in;
+    const char *title, *body, *host, *source_url, *kind, *deadline;
+    int need_people;
+    long long exists, text_changed;
+    Buf sql;
+
+    if (!auth_require_admin(req, res, &u))
+        return;
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT COUNT(*) FROM posts WHERE id = %u", post_id);
+    exists = db_scalar(sql.data, 0);
+    buf_free(&sql);
+    if (!exists) {
+        res_error(res, 404, "not_found", "게시물이 없습니다.");
+        return;
+    }
+    in = body_object(req, res);
+    if (!in)
+        return;
+
+    /* 빈 문자열로 온 선택 항목은 NULL 로 저장한다 (지운 것으로 본다) */
+    title       = json_str(in, "title", "");
+    body        = json_str(in, "body", "");
+    host        = json_str(in, "host", NULL);
+    source_url  = json_str(in, "source_url", NULL);
+    kind        = normalize_kind(json_str(in, "kind", "contest"));
+    deadline    = clean_date(json_str(in, "deadline", NULL));
+    need_people = (int)json_int(in, "need_people", 0);
+    if (host && !host[0])
+        host = NULL;
+    if (source_url && !source_url[0])
+        source_url = NULL;
+
+    if (strlen(title) < 2) {
+        res_error(res, 400, "bad_title", "제목을 입력하세요.");
+        goto out;
+    }
+    if (strlen(body) < 2) {
+        res_error(res, 400, "bad_body", "내용을 입력하세요.");
+        goto out;
+    }
+    if (need_people < 0 || need_people > 1000)
+        need_people = 0;
+    /* 지난 날짜는 받지 않되, 원래 마감일을 그대로 두는 것은 괜찮다 (이미 지난 글도 다른 항목은 고칠 수 있게) */
+    if (past_date(deadline)) {
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT IFNULL(deadline = %Q, 0) FROM posts WHERE id = %u", deadline, post_id);
+        exists = db_scalar(sql.data, 0);
+        buf_free(&sql);
+        if (!exists) {
+            res_error(res, 400, "bad_deadline", "마감일은 오늘이나 그 뒤로 정하세요.");
+            goto out;
+        }
+    }
+
+    buf_init(&sql);
+    db_sqlf(&sql, "SELECT NOT (title <=> %Q AND body <=> %Q) FROM posts WHERE id = %u", title, body, post_id);
+    text_changed = db_scalar(sql.data, 0);
+    buf_reset(&sql);
+    db_sqlf(&sql,
+            "UPDATE posts SET kind = '%s', title = %Q, body = %Q, host = %Q, source_url = %Q, "
+            "                 deadline = %Q, need_people = %d WHERE id = %u",
+            kind, title, body, host, source_url, deadline, need_people, post_id);
+    if (!db_exec_buf(&sql)) {
+        buf_free(&sql);
+        res_error(res, 500, "db_error", "게시물을 저장할 수 없습니다.");
+        goto out;
+    }
+    if (text_changed) {
+        buf_reset(&sql);
+        db_sqlf(&sql, "DELETE FROM post_ai_departments WHERE post_id = %u", post_id);
+        db_exec_buf(&sql);
+        buf_reset(&sql);
+        db_sqlf(&sql, "DELETE FROM post_ai WHERE post_id = %u", post_id);
+        db_exec_buf(&sql);
+        ai_start_background(0);   /* 바뀐 글을 다시 분석 (키가 없으면 아무 일도 안 한다) */
+    }
+    buf_free(&sql);
+    res_json(res, 200, "{\"ok\":true}");
+
+out:
+    json_free(in);
+}
+
 /* 관리자 경로 라우터.
  * 주의: GET /api/posts/{id} 는 api_posts.c 가 먼저 처리하므로, 여기서는 같은 경로라도
  * POST/DELETE/PUT 메서드만 맡는다. (디스패처가 route_posts 를 route_admin 보다 먼저 부름) */
@@ -568,6 +705,11 @@ int route_admin(Request *req, Response *res)
 
     if (req_is(req, "POST", "/api/posts")) {
         handle_post_create(req, res);
+        return 1;
+    }
+    if (strcmp(req->method, "PUT") == 0 &&
+        path_id(req->path, "/api/posts/", NULL, &id)) {
+        handle_post_update(req, res, id);
         return 1;
     }
     if (strcmp(req->method, "DELETE") == 0 &&
