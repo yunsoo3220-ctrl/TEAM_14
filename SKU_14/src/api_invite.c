@@ -228,17 +228,17 @@ static void handle_invite(Request *req, Response *res)
     if (email[0] && (mail_enabled() || mail_dev_mode())) {
         api_site_url(req, site, sizeof site);
         buf_init(&subject);
-        buf_printf(&subject, "[SKU14] %s 님이 %s 참여를 권유했습니다", u.nickname, target_label(&t));
+        buf_printf(&subject, "[서경스터디] %s 님이 %s 참여를 권유했습니다", u.nickname, target_label(&t));
         buf_init(&text);
         buf_printf(&text,
                    "안녕하세요, %s 님.\n\n"
-                   "%s 님%s%s%s이 SKU14 에서 아래 %s에 함께하자고 권유했습니다.\n\n"
+                   "%s 님%s%s%s이 서경스터디에서 아래 %s에 함께하자고 권유했습니다.\n\n"
                    "  %s\n\n"
                    "자세히 보기: %s/%s\n\n"
                    "관심이 있다면 링크에서 내용을 확인하고 댓글이나 [참여하기] 로 답해 주세요.\n"
-                   "SKU14 에 로그인하면 알림함에서도 이 권유를 볼 수 있습니다.\n\n"
+                   "서경스터디에 로그인하면 알림함에서도 이 권유를 볼 수 있습니다.\n\n"
                    "-- \n"
-                   "이 메일은 SKU14 회원이 '참여 권유' 버튼을 눌러 보냈습니다.\n"
+                   "이 메일은 서경스터디 회원이 '참여 권유' 버튼을 눌러 보냈습니다.\n"
                    "같은 모임에서는 한 번만 보낼 수 있으며, 회원님의 메일 주소는 상대에게 알려지지 않습니다.\n",
                    nickname, u.nickname,
                    u.department_name[0] ? "(" : "", u.department_name, u.department_name[0] ? ")" : "",

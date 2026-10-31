@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-  SKU14 공모전 팀원 모집 커뮤니티 - 유일한 HTML 페이지 (단일 페이지 앱)
+  서경스터디 공모전 팀원 모집 커뮤니티 - 유일한 HTML 페이지 (단일 페이지 앱)
 
   구성
     1) <aside class="sidebar">   왼쪽 메뉴 (좁은 화면에서는 햄버거 버튼으로 연다)
@@ -21,10 +21,12 @@
 <meta charset="utf-8">
 <!-- 휴대폰에서 화면 폭에 맞춰 보이게 (없으면 PC 화면을 축소해서 보여 준다) -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SKU14 · 공모전 팀원 모집</title>
+<title>서경스터디 · 공모전 팀원 모집</title>
 <!-- 웹 글꼴 Pretendard. preconnect 로 글꼴 서버와 미리 연결해 첫 표시를 빠르게 한다 -->
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<!-- 서경대 포탈과 같은 글꼴 Spoqa Han Sans Neo (style.css 에서 가장 먼저 쓴다) -->
+<link rel="stylesheet" href="https://spoqa.github.io/spoqa-han-sans/css/SpoqaHanSansNeo.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -34,11 +36,13 @@
 
 <!-- ────────────────────────────────────────────── 사이드바 (메뉴)
      data-nav 값은 app.js 의 markNav() 가 현재 메뉴를 강조할 때 쓴다.
-     관리자·내 프로필 메뉴는 hidden 으로 시작해 로그인 상태에 따라 app.js 가 보인다.
+     내 모집 관리·채팅방·관리자 메뉴는 hidden 으로 시작해 로그인 상태에 따라 app.js 가 보인다.
+     알림함과 내 프로필은 상단바 오른쪽(🔔 · 내 이름)에서 열고, 내 학과 대상·학과별 추천은
+     공모전 목록·그룹 스터디·전공책 장터 화면 위의 탭으로 옮겼다.
      svg 아이콘은 aria-hidden 으로 화면 낭독기가 읽지 않게 한다. -->
 <aside class="sidebar" id="sidebar">
   <a class="logo" href="#/posts">
-    <span class="logo-mark">SKU<b>14</b></span>
+    <span class="logo-mark">서경<b>스터디</b></span>
     <span class="logo-divider"></span>
     <span class="logo-text">공모전</span>
   </a>
@@ -49,24 +53,6 @@
         <svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
       </span>
       <span class="label">공모전 목록<small>Contests</small></span>
-    </a>
-    <a href="#/mine" data-nav="mine">
-      <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.5 6 .9-4.3 4.2 1 6-5.3-2.8L6.7 19.6l1-6L3.4 9.4l6-.9z"/></svg>
-      </span>
-      <span class="label">내 학과 대상<small>For My Major</small></span>
-    </a>
-    <a href="#/reco" data-nav="reco">
-      <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
-      </span>
-      <span class="label">학과별 추천<small>Picked by Major</small></span>
-    </a>
-    <a href="#/recruits" data-nav="recruits">
-      <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M16 20v-1.5a3.5 3.5 0 00-3.5-3.5h-5A3.5 3.5 0 004 18.5V20"/><path d="M10 11a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19 8v6M22 11h-6"/></svg>
-      </span>
-      <span class="label">팀원 모집<small>Recruit</small></span>
     </a>
     <a href="#/studies" data-nav="studies">
       <span class="ico" aria-hidden="true">
@@ -80,18 +66,11 @@
       </span>
       <span class="label">전공책 장터<small>Textbooks</small></span>
     </a>
-    <a href="#/ai" data-nav="ai">
+    <a href="#/recruits" data-nav="recruits" id="nav-recruit" hidden>
       <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9.5 9.5h5v5h-5zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg>
+        <svg viewBox="0 0 24 24"><path d="M9 3.5h6v3H9z"/><path d="M15 5h2.5A1.5 1.5 0 0119 6.5v13a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 015 19.5v-13A1.5 1.5 0 016.5 5H9"/><path d="M9 13.5l2 2 4-4"/></svg>
       </span>
-      <span class="label">AI 구조<small>How AI Works</small></span>
-    </a>
-    <a href="#/notifications" data-nav="notifications" id="nav-noti" hidden>
-      <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M6 9a6 6 0 0112 0c0 5 2 6.5 2 6.5H4S6 14 6 9z"/><path d="M10 19a2 2 0 004 0"/></svg>
-      </span>
-      <span class="label">알림함<small>Notifications</small></span>
-      <span class="nav-badge" data-unread hidden></span>
+      <span class="label">내 모집 관리<small>My Recruits</small></span>
     </a>
     <a href="#/chats" data-nav="chats" id="nav-chat" hidden>
       <span class="ico" aria-hidden="true">
@@ -100,23 +79,11 @@
       <span class="label">채팅방<small>Chats</small></span>
       <span class="nav-badge" data-chat-unread hidden></span>
     </a>
-    <a href="#/me" data-nav="me" id="nav-me" hidden>
-      <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>
-      </span>
-      <span class="label">내 프로필<small>Profile</small></span>
-    </a>
     <a href="#/admin" data-nav="admin" id="nav-admin" hidden>
       <span class="ico" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 13.5a7.6 7.6 0 000-3l2-1.5-2-3.4-2.3 1a7.6 7.6 0 00-2.6-1.5L14 2h-4l-.5 2.6a7.6 7.6 0 00-2.6 1.5l-2.3-1-2 3.4 2 1.5a7.6 7.6 0 000 3l-2 1.5 2 3.4 2.3-1a7.6 7.6 0 002.6 1.5L10 22h4l.5-2.6a7.6 7.6 0 002.6-1.5l2.3 1 2-3.4z"/></svg>
       </span>
       <span class="label">관리자<small>Admin</small></span>
-    </a>
-    <a href="#/login" data-nav="login">
-      <span class="ico" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 100-8 4 4 0 000 8z"/><path d="M4 21a8 8 0 1116 0"/></svg>
-      </span>
-      <span class="label" id="nav-login-label">로그인 · 가입<small>Sign in</small></span>
     </a>
   </nav>
 
@@ -147,15 +114,18 @@
   <main id="view"></main>
 
   <footer class="pagefoot">
-    <span>SKU14 · 공모전 팀원 모집</span>
+    <span>서경스터디 · 공모전 팀원 모집</span>
     <span class="dim">자료 출처: 서경대학교 공지사항</span>
   </footer>
 </div>
 
 <!-- ────────────────────────────────────────────── 게시판 목록
-     #/posts, #/mine (app.js 의 viewList). 요약 타일 → 추천 영역 → 필터 → 목록 순서 -->
+     #/posts, #/mine (app.js 의 viewList). 탭 → 요약 타일 → 추천 영역 → 필터 → 목록 순서
+     탭(data-tabs): 전체 공모전 #/posts · 내 학과 대상 #/mine · 학과별 추천 #/reco -->
 <template id="tpl-list">
   <div class="stack">
+    <nav class="sub-tabs" data-tabs></nav>
+
     <div class="tiles" data-tiles></div>
 
     <section class="reco" data-reco hidden></section>
@@ -178,10 +148,6 @@
             <option value="etc">기타</option>
           </select>
         </label>
-        <label class="check">
-          <input type="checkbox" data-f="mine">
-          <span>내 학과가 쓸 수 있는 글만</span>
-        </label>
       </div>
     </section>
 
@@ -198,6 +164,7 @@
      #/reco/{학과} (viewReco). 학과를 고르면 자체 모델의 관련 공모전을 구간(매우 관련/관련/참고)별로 -->
 <template id="tpl-reco">
   <div class="stack">
+    <nav class="sub-tabs" data-tabs></nav>
     <section class="reco reco-page">
       <div class="reco-head">
         <span class="ai-badge">AI</span>
@@ -306,22 +273,25 @@
   </div>
 </template>
 
-<!-- ────────────────────────────────────────────── 팀원 모집 게시판
-     tpl-recruits: 목록 (#/recruits), tpl-recruit-new: 글쓰기 (#/recruits/new), tpl-recruit: 상세 (#/recruits/{id}) -->
+<!-- ────────────────────────────────────────────── 내 모집 관리 (팀원 모집글)
+     tpl-recruits: 목록, tpl-recruit-new: 글쓰기 (#/recruits/new), tpl-recruit: 상세 (#/recruits/{id})
+     목록의 탭(data-tabs): 내가 쓴 모집글 #/recruits · 참여 중인 팀 #/recruits/joined · 모집글 둘러보기 #/recruits/all
+     필터(data-filters)는 둘러보기 탭에서만 보인다 -->
 <template id="tpl-recruits">
   <div class="stack">
+    <nav class="sub-tabs" data-tabs></nav>
     <section class="card">
       <div class="card-head">
-        <h2>팀원 모집 <span data-count class="muted"></span></h2>
+        <h2><span data-heading>내가 쓴 모집글</span> <span data-count class="muted"></span></h2>
         <a class="btn" href="#/recruits/new" data-new>모집글 쓰기</a>
       </div>
-      <div class="filters three">
+      <p class="muted small tab-note" data-sub></p>
+      <div class="filters three" data-filters hidden>
         <label><span>분야·역할</span><select data-f="tag"><option value="">전체</option></select></label>
         <label><span>상태</span>
           <select data-f="status">
             <option value="open">모집 중</option>
             <option value="all">전체</option>
-            <option value="mine">내가 속한 팀</option>
           </select>
         </label>
         <label><span>정렬</span>
@@ -338,7 +308,7 @@
 
 <template id="tpl-recruit-new">
   <div class="stack">
-    <a class="back" href="#/recruits">← 모집 게시판</a>
+    <a class="back" href="#/recruits">← 내 모집 관리</a>
     <section class="card">
       <div class="card-head"><h2>모집글 쓰기</h2></div>
       <form data-form class="stack-sm">
@@ -362,7 +332,8 @@
 
 <template id="tpl-recruit">
   <div class="stack">
-    <a class="back" href="#/recruits">← 모집 게시판</a>
+    <!-- 돌아갈 곳은 app.js 가 정한다: 내 글·내 팀이면 내 모집 관리, 아니면 연결된 공모전 -->
+    <a class="back" href="#/recruits/all" data-back>← 모집글 둘러보기</a>
     <article class="card post">
       <div class="post-head">
         <div class="item-top" data-tags-top></div>
@@ -405,21 +376,29 @@
 </template>
 
 <!-- ────────────────────────────────────────────── 그룹 스터디
-     tpl-studies: 목록 (#/studies), tpl-study-new: 만들기 (#/studies/new), tpl-study: 상세·멤버 (#/studies/{id}) -->
+     tpl-studies: 목록, tpl-study-new: 만들기 (#/studies/new), tpl-study: 상세·멤버 (#/studies/{id})
+     목록의 탭(data-tabs): 전체 스터디 #/studies · 내 학과 대상 #/studies/major · 학과별 추천 #/studies/reco/{학과} -->
 <template id="tpl-studies">
   <div class="stack">
+    <nav class="sub-tabs" data-tabs></nav>
     <section class="card">
       <div class="card-head">
-        <h2>그룹 스터디 <span data-count class="muted"></span></h2>
+        <h2><span data-heading>그룹 스터디</span> <span data-count class="muted"></span></h2>
         <a class="btn" href="#/studies/new" data-new>스터디 만들기</a>
       </div>
-      <div class="filters one">
+      <p class="muted small tab-note" data-sub hidden></p>
+      <!-- 전체 탭 -->
+      <div class="filters one" data-filter-all>
         <label><span>보기</span>
           <select data-f="mine">
             <option value="">전체 스터디</option>
             <option value="1">내가 속한 스터디</option>
           </select>
         </label>
+      </div>
+      <!-- 학과별 추천 탭 -->
+      <div class="filters one" data-filter-reco hidden>
+        <label><span>학과</span><select data-f="dept"></select></label>
       </div>
     </section>
     <div data-list class="recruit-grid"></div>
@@ -434,6 +413,8 @@
       <form data-form class="stack-sm">
         <label><span>스터디 이름</span><input name="name" maxlength="100" required placeholder="예) 정보처리기사 실기 스터디"></label>
         <label><span>정원</span><input name="max_members" type="number" min="2" max="50" value="6" required></label>
+        <label><span>대상 학과 <small>선택 · 그 학과 학생의 '내 학과 대상' 탭에 보입니다</small></span>
+          <select name="department_id" data-dept><option value="">학과 무관</option></select></label>
         <label><span>종료일 <small>선택 · 이날이 지나면 스터디가 자동으로 삭제됩니다</small></span><input name="end_date" type="date"></label>
         <label><span>소개 <small>선택</small></span><textarea name="description" rows="5" maxlength="1000"
           placeholder="무엇을 공부하는지, 모이는 요일·방식(온라인/대면), 멘토·멘티를 둘 계획인지 적어 주세요."></textarea></label>
@@ -456,6 +437,7 @@
         <div><dt>방장</dt><dd data-owner></dd></div>
         <div><dt>인원</dt><dd data-count></dd></div>
         <div><dt>멘토 · 멘티</dt><dd data-mm></dd></div>
+        <div><dt>대상 학과</dt><dd data-dept></dd></div>
         <div><dt>만든 날</dt><dd data-created></dd></div>
         <div><dt>종료일</dt><dd data-end></dd></div>
       </dl>
@@ -483,17 +465,21 @@
 </template>
 
 <!-- ────────────────────────────────────────────── 전공책 장터
-     tpl-books: 목록 (#/books), tpl-book-new: 판매 글 쓰기 (#/books/new), tpl-book: 상세·사진·문의 댓글 (#/books/{id}) -->
+     tpl-books: 목록, tpl-book-new: 판매 글 쓰기 (#/books/new), tpl-book: 상세·사진·문의 댓글 (#/books/{id})
+     목록의 탭(data-tabs): 전체 책 #/books · 내 학과 대상 #/books/major · 학과별 추천 #/books/reco/{학과} -->
 <template id="tpl-books">
   <div class="stack">
+    <nav class="sub-tabs" data-tabs></nav>
     <section class="card">
       <div class="card-head">
-        <h2>전공책 장터 <span data-count class="muted"></span></h2>
+        <h2><span data-heading>전공책 장터</span> <span data-count class="muted"></span></h2>
         <a class="btn" href="#/books/new" data-new>책 팔기</a>
       </div>
+      <p class="muted small tab-note" data-sub hidden></p>
+      <!-- 전체 · 내 학과 대상 탭 (내 학과 대상에서는 학과 칸을 뺀다) -->
       <form class="filters four" data-filters>
         <label><span>검색</span><input data-f="q" type="search" placeholder="책 제목, 저자, 과목명"></label>
-        <label><span>학과</span><select data-f="dept"><option value="">전체 학과</option></select></label>
+        <label data-dept-filter><span>학과</span><select data-f="dept"><option value="">전체 학과</option></select></label>
         <label><span>보기</span>
           <select data-f="status">
             <option value="on">판매 중인 책</option>
@@ -509,6 +495,10 @@
           </select>
         </label>
       </form>
+      <!-- 학과별 추천 탭 -->
+      <div class="filters one" data-filter-reco hidden>
+        <label><span>학과</span><select data-reco-dept></select></label>
+      </div>
     </section>
     <div data-list class="book-grid"></div>
   </div>
@@ -668,7 +658,7 @@
       <div class="reco-head">
         <span class="ai-badge">AI</span>
         <div>
-          <h2>SKU14 추천 AI 는 이렇게 생겼습니다</h2>
+          <h2>서경스터디 추천 AI 는 이렇게 생겼습니다</h2>
           <p class="muted">공모전 추천 · 개인 맞춤 · 팀원 찾기는 모두 하나의 자체 모델이 계산합니다.
             글자를 보는 <b>TF-IDF</b> 와 뜻을 보는 <b>딥러닝 임베딩</b>을 함께 쓰고, 관리자 체크 · 댓글 · ♥ 같은
             학생들의 행동으로 계속 다시 학습합니다. 외부 유료 API 없이 이 서버 안에서 돌아갑니다.</p>
@@ -747,10 +737,10 @@
         <div class="aa-layer">
           <p class="aa-lt">⑤ 출력</p>
           <div class="aa-boxes">
-            <a class="aa-box out" href="#/reco"><b>학과별 추천</b><span>학과 ↔ 공모전</span></a>
+            <a class="aa-box out" href="#/reco"><b>학과별 추천</b><span>학과 ↔ 공모전 · 스터디 · 전공책</span></a>
             <a class="aa-box out" href="#/reco"><b>개인 맞춤</b><span>학과 + 내 관심사 + 내가 ♥한 글</span></a>
             <a class="aa-box out" href="#/recruits"><b>팀원 찾기</b><span>회원 ↔ 회원 · 모집글·스터디의 [팀원 찾기]</span></a>
-            <a class="aa-box out" href="#/recruits"><b>나와 맞는 순</b><span>회원 ↔ 모집글</span></a>
+            <a class="aa-box out" href="#/recruits/all"><b>나와 맞는 순</b><span>회원 ↔ 모집글</span></a>
             <a class="aa-box out" href="#/admin"><b>새 글 학과 확률</b><span>관리자가 쓰는 동안 실시간 · 재학습 없이</span></a>
           </div>
         </div>
@@ -850,7 +840,7 @@
     <!-- 로그인: 처음에 보이는 화면 -->
     <section class="card auth-card" data-login-card>
       <div class="auth-title">
-        <span class="logo-mark">SKU<b>14</b></span>
+        <span class="logo-mark">서경<b>스터디</b></span>
         <h2>로그인</h2>
         <p class="muted small">공모전 정보와 팀원 모집을 한곳에서</p>
       </div>
@@ -872,8 +862,12 @@
         <fieldset class="auth-box" data-email-box>
           <legend>학교 이메일 인증 <small>필수</small></legend>
           <div class="code-row">
-            <input name="email" type="email" autocomplete="email" placeholder="아이디@skuniv.ac.kr"
-                   pattern="[A-Za-z0-9._\-]+@skuniv\.ac\.kr" required>
+            <!-- 아이디만 입력받고 @skuniv.ac.kr 은 고정. 전체 주소는 app.js 가 붙여서 보낸다 -->
+            <div class="email-group">
+              <input name="email_id" autocomplete="username" placeholder="아이디"
+                     pattern="[A-Za-z0-9._\-]+" required>
+              <span class="email-domain">@skuniv.ac.kr</span>
+            </div>
             <button type="button" class="ghost" data-send-code>인증 코드 받기</button>
           </div>
           <div class="code-row" data-code-row hidden>
@@ -882,18 +876,30 @@
             <span class="code-timer" data-timer></span>
             <button type="button" data-verify-code>확인</button>
           </div>
-          <p class="auth-msg muted small" data-code-msg>@skuniv.ac.kr 로 끝나는 학교 이메일만 쓸 수 있습니다.</p>
+          <p class="auth-msg muted small" data-code-msg>학교 이메일(@skuniv.ac.kr)의 아이디 부분만 입력하세요.</p>
         </fieldset>
 
         <fieldset class="auth-box">
           <legend>기본 정보 <small>필수</small></legend>
-          <div class="form-grid">
-            <label><span>학번 <small>로그인 아이디</small></span><input name="student_no" inputmode="numeric" required></label>
+          <!-- 한 줄에 한 칸씩 위에서 아래로 -->
+          <div class="stack-sm">
             <label><span>이름</span><input name="name" required></label>
-            <label><span>전화번호</span><input name="phone" type="tel" inputmode="numeric" placeholder="010-0000-0000" required></label>
+            <label><span>학번 <small>로그인 아이디</small></span><input name="student_no" inputmode="numeric" required></label>
+            <!-- 전화번호는 세 칸으로 받고, app.js 가 010-0000-0000 형태로 합쳐서 보낸다 -->
+            <label>
+              <span>전화번호</span>
+              <div class="phone-group" data-phone>
+                <input name="phone1" type="tel" inputmode="numeric" maxlength="3" value="010" aria-label="전화번호 앞자리" required>
+                <span>-</span>
+                <input name="phone2" type="tel" inputmode="numeric" maxlength="4" placeholder="0000" aria-label="전화번호 가운데 자리" required>
+                <span>-</span>
+                <input name="phone3" type="tel" inputmode="numeric" maxlength="4" placeholder="0000" aria-label="전화번호 끝자리" required>
+              </div>
+            </label>
             <label><span>비밀번호 <small>8자 이상</small></span><input name="password" type="password" autocomplete="new-password" required></label>
+            <label><span>비밀번호 확인 <small data-pw-match></small></span><input name="password_confirm" type="password" autocomplete="new-password" required></label>
+            <label><span>소속 학과 <small>댓글 권한을 가리는 기준</small></span><select name="department_id" required></select></label>
           </div>
-          <label class="mt"><span>소속 학과 <small>댓글 권한을 가리는 기준</small></span><select name="department_id" required></select></label>
         </fieldset>
 
         <div class="namecard">
@@ -926,7 +932,7 @@
 <!-- 관리자 · 회원 관리 (#/admin/users): 모든 회원 보기·찾기, 회원 추가·삭제, 알림함으로 메시지 -->
 <template id="tpl-admin-users">
   <div class="stack">
-    <nav class="admin-tabs" data-tabs></nav>
+    <nav class="sub-tabs" data-tabs></nav>
     <section class="card">
       <div class="card-head">
         <h2>회원 <span data-count class="muted"></span></h2>
@@ -953,7 +959,7 @@
 <!-- 관리자 · 전체 게시물 (#/admin/content): 회원이 쓴 모든 글과 주인, 주인에게 알림 보내기 -->
 <template id="tpl-admin-content">
   <div class="stack">
-    <nav class="admin-tabs" data-tabs></nav>
+    <nav class="sub-tabs" data-tabs></nav>
     <section class="card">
       <div class="card-head"><h2>전체 게시물 <span data-count class="muted"></span></h2></div>
       <div class="filters three">
@@ -980,7 +986,7 @@
 
 <template id="tpl-admin">
   <div class="stack">
-    <nav class="admin-tabs" data-tabs></nav>
+    <nav class="sub-tabs" data-tabs></nav>
     <div class="tiles" data-summary></div>
 
     <section class="card">

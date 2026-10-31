@@ -94,8 +94,8 @@ int main(int argc, char **argv)
             log_err("SKU_SMTP_URL 이 없습니다. smtp.env 를 채우고 scripts/run-server.sh --test-mail 로 실행하세요.");
             return 1;
         }
-        if (!mail_send(argv[2], "[SKU14] 메일 발송 시험",
-                       "SKU14 서버의 메일 설정이 올바르게 동작합니다.\n"
+        if (!mail_send(argv[2], "[서경스터디] 메일 발송 시험",
+                       "서경스터디 서버의 메일 설정이 올바르게 동작합니다.\n"
                        "이 메일을 받았다면 가입 인증 코드도 같은 경로로 발송됩니다.\n", err, sizeof err)) {
             log_err("%s", err);
             return 1;

@@ -18,6 +18,8 @@
 #include <string.h>
 #include <time.h>        /* Date 헤더용 현재 시각 */
 
+#define MAIL_FROM_NAME "서경스터디"   /* 받는 사람 메일함에 보이는 보낸 사람 이름 */
+
 /* 환경변수 k 의 값. 없거나 빈 문자열이면 NULL (빈 값도 "설정 안 됨" 으로 취급). */
 static const char *env(const char *k)
 {
@@ -137,10 +139,12 @@ int mail_send(const char *to, const char *subject, const char *text, char *err, 
     if (!random_hex(id, 16))
         str_copy(id, sizeof id, "0");   /* Message-ID 는 보안 값이 아니므로 실패해도 진행 */
 
-    /* 4) 메일 원문 조립: 헤더들 → 빈 줄(\r\n\r\n) → base64 본문 */
+    /* 4) 메일 원문 조립: 헤더들 → 빈 줄(\r\n\r\n) → base64 본문
+     * 보낸 사람 이름도 한글이라 제목처럼 encoded-word(=?UTF-8?B?...?=)로 쓴다 (헤더에는 ASCII 만 들어간다) */
     buf_init(&msg);
-    buf_printf(&msg, "Date: %s\r\nTo: <%s>\r\nFrom: SKU14 <%s>\r\nMessage-ID: <%s@sku14.com>\r\nSubject: =?UTF-8?B?",
-               date, to, from, id);
+    buf_printf(&msg, "Date: %s\r\nTo: <%s>\r\nFrom: =?UTF-8?B?", date, to);
+    b64(&msg, (const unsigned char *)MAIL_FROM_NAME, strlen(MAIL_FROM_NAME), 0);
+    buf_printf(&msg, "?= <%s>\r\nMessage-ID: <%s@sku14.com>\r\nSubject: =?UTF-8?B?", from, id);
     b64(&msg, (const unsigned char *)subject, strlen(subject), 0);   /* 제목 = MIME encoded-word */
     buf_puts(&msg, "?=\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n"
                    "Content-Transfer-Encoding: base64\r\n\r\n");

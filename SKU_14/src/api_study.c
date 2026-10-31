@@ -1,7 +1,9 @@
 /* 그룹 스터디
  *
- *   GET    /api/studies                        스터디 목록 ?mine=1 이면 내가 속한 것만
- *   POST   /api/studies                        스터디 만들기 {name, description?, max_members?, end_date?, role?} (로그인)
+ *   GET    /api/studies                        스터디 목록 ?mine=1 이면 내가 속한 것만, ?dept=학과id 면 그 학과 대상만,
+ *                                              ?reco=학과id 면 그 학과와 관련 있는 순 (자체 모델, 학과별 추천)
+ *   POST   /api/studies                        스터디 만들기 {name, description?, max_members?, end_date?,
+ *                                                             department_id?, role?} (로그인)
  *   GET    /api/studies/{id}                   스터디 + 멤버
  *   DELETE /api/studies/{id}                   스터디 삭제 (방장·관리자)
  *   POST   /api/studies/{id}/join              참여하기 (로그인, 정원 안에서)
@@ -17,12 +19,15 @@
  * 예전의 멘토링 메뉴는 없앴다 (스터디에서 멘토·멘티를 정할 수 있으므로). 남아 있던 멘토링은 서버가 시작할 때
  * 그룹 스터디로 옮긴다 (cleanup.c). study_groups.kind 열은 예전 DB 와 맞추려고 남겨 두었고 늘 'study' 다.
  *
+ * 대상 학과(department_id)는 선택이다 (NULL = 학과 무관). 목록의 "내 학과 대상" 탭이 이 값으로 거른다.
+ *
  * 관련 테이블:
- *   study_groups   스터디 (owner_id = 방장)
+ *   study_groups   스터디 (owner_id = 방장, department_id = 대상 학과)
  *   study_members  (스터디, 회원, 역할)
  */
 #include "api.h"
 #include "db.h"
+#include "ml.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,7 +122,8 @@ static int study_manage_ok(unsigned gid, const CurrentUser *u)
 /* ------------------------------------------------------------ 목록 */
 
 /* 목록 행: id, name, description 앞부분, max_members, created_at, owner_id, 방장 표시 이름,
- *          멤버 수, 멘토 수, 멘티 수, 내 역할('' = 멤버 아님), 종료일('' = 없음), 구분(늘 study)
+ *          멤버 수, 멘토 수, 멘티 수, 내 역할('' = 멤버 아님), 종료일('' = 없음), 구분(늘 study),
+ *          대상 학과 id(0 = 학과 무관), 대상 학과 이름, description 전체(학과별 추천·상세에서 쓴다)
  * db_sqlf 의 첫 인자로 지금 회원 번호(%u, 비로그인은 0)를 준다. */
 #define STUDY_SELECT \
     "SELECT g.id, g.name, LEFT(REPLACE(REPLACE(g.description, '\\r', ''), '\\n', ' '), 120), " \
@@ -126,11 +132,14 @@ static int study_manage_ok(unsigned gid, const CurrentUser *u)
     "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id AND m.role = 'mentor'), " \
     "       (SELECT COUNT(*) FROM study_members m WHERE m.group_id = g.id AND m.role = 'mentee'), " \
     "       IFNULL((SELECT m.role FROM study_members m WHERE m.group_id = g.id AND m.user_id = %u), ''), " \
-    "       IFNULL(DATE_FORMAT(g.end_date, '%%Y-%%m-%%d'), ''), g.kind " \
-    "FROM study_groups g JOIN users u ON u.id = g.owner_id "
+    "       IFNULL(DATE_FORMAT(g.end_date, '%%Y-%%m-%%d'), ''), g.kind, " \
+    "       IFNULL(g.department_id, 0), IFNULL(sd.name, ''), g.description " \
+    "FROM study_groups g JOIN users u ON u.id = g.owner_id " \
+    "LEFT JOIN departments sd ON sd.id = g.department_id "
 
-/* STUDY_SELECT 결과 한 행을 JSON 객체로 쓴다 */
-static void write_study_row(Buf *b, MYSQL_ROW row)
+/* STUDY_SELECT 결과 한 행을 JSON 객체로 쓴다.
+ * hit 가 있으면(학과별 추천) 학과 관련도 점수와 근거 키워드도 덧붙인다. */
+static void write_study_row(Buf *b, MYSQL_ROW row, const MlHit *hit)
 {
     buf_putc(b, '{');
     json_kv_int(b, "id", atoll(row[0]));                     buf_putc(b, ',');
@@ -147,28 +156,87 @@ static void write_study_row(Buf *b, MYSQL_ROW row)
     buf_putc(b, ',');
     json_kv_str(b, "end_date", row[11][0] ? row[11] : NULL); /* null = 종료일 없음 */
     buf_putc(b, ',');
-    json_kv_str(b, "kind", row[12]);
+    json_kv_str(b, "kind", row[12]);                         buf_putc(b, ',');
+    json_kv_int(b, "department_id", atoll(row[13]));         buf_putc(b, ',');   /* 0 = 학과 무관 */
+    json_kv_str(b, "department", row[14][0] ? row[14] : NULL);
+    if (hit) {
+        buf_putc(b, ',');
+        json_kv_int(b, "score", hit->score);
+        buf_putc(b, ',');
+        ml_write_terms(b, hit);
+    }
     buf_putc(b, '}');
 }
 
-/* GET /api/studies?mine=1 */
+/* 학과별 추천: rows 의 스터디를 학과 dept 와 관련 있는 순으로 b 에 쓴다 (ML_MIN_SCORE 미만은 뺀다).
+ * 모델에 넘기는 글 = 제목: 스터디 이름, 본문: 소개 + 대상 학과 이름. 모델을 만들 수 없으면 0. */
+static int write_reco_studies(Buf *b, MYSQL_ROW *rows, int n, unsigned dept)
+{
+    unsigned *ids = (unsigned *)calloc((size_t)n, sizeof *ids);
+    const char **titles = (const char **)calloc((size_t)n, sizeof *titles);
+    char **bodies = (char **)calloc((size_t)n, sizeof *bodies);
+    MlHit *hits = (MlHit *)calloc((size_t)n, sizeof *hits);
+    int i, k, m = -1;
+
+    if (ids && titles && bodies && hits) {
+        for (i = 0; i < n; i++) {
+            Buf t;
+            buf_init(&t);
+            buf_puts(&t, rows[i][15]);
+            buf_putc(&t, '\n');
+            buf_puts(&t, rows[i][14]);
+            ids[i] = (unsigned)strtoul(rows[i][0], NULL, 10);
+            titles[i] = rows[i][1];
+            bodies[i] = t.data;   /* 메모리가 모자라 NULL 이면 모델이 빈 글로 본다 */
+        }
+        m = ml_rank_texts(dept, ids, titles, (const char *const *)bodies, n, ML_MIN_SCORE, hits, NULL);
+        /* 점수 순(hits)으로, 그 스터디의 행을 찾아 쓴다 (많아야 STUDY_LIST_MAX 개라 그냥 훑는다) */
+        for (k = 0; k < m; k++)
+            for (i = 0; i < n; i++)
+                if (ids[i] == hits[k].id) {
+                    if (k)
+                        buf_putc(b, ',');
+                    write_study_row(b, rows[i], &hits[k]);
+                    break;
+                }
+        for (i = 0; i < n; i++)
+            free(bodies[i]);
+    }
+    free(ids);
+    free(titles);
+    free(bodies);
+    free(hits);
+    return m >= 0;
+}
+
+/* GET /api/studies?mine=1&dept=학과id&reco=학과id
+ *   mine=1  내가 속한 스터디만
+ *   dept    그 학과를 대상으로 정한 스터디만 (내 학과 대상)
+ *   reco    자체 모델이 그 학과와 관련 있다고 본 스터디를 관련도 순으로 (학과별 추천) */
 static void handle_study_list(Request *req, Response *res)
 {
     CurrentUser u;
-    char mine[4] = "";
+    char mine[4] = "", dept[12] = "", reco[12] = "";
+    unsigned dept_id, reco_id;
     Buf sql, b;
     MYSQL_RES *qr;
-    MYSQL_ROW row;
-    int first = 1;
+    MYSQL_ROW rows[STUDY_LIST_MAX];   /* 결과 행들 (최신순) */
+    int n = 0, i;
 
     auth_current(req, &u);
     req_query(req, "mine", mine, sizeof mine);
+    req_query(req, "dept", dept, sizeof dept);
+    req_query(req, "reco", reco, sizeof reco);
+    dept_id = (unsigned)strtoul(dept, NULL, 10);
+    reco_id = (unsigned)strtoul(reco, NULL, 10);
 
     buf_init(&sql);
     db_sqlf(&sql, STUDY_SELECT "WHERE 1 = 1 ", u.id);
     if (mine[0] == '1' && u.id)
         db_sqlf(&sql, "AND EXISTS (SELECT 1 FROM study_members x WHERE x.group_id = g.id AND x.user_id = %u) ",
                 u.id);
+    if (dept_id)
+        db_sqlf(&sql, "AND g.department_id = %u ", dept_id);
     db_sqlf(&sql, "ORDER BY g.created_at DESC, g.id DESC LIMIT %d", STUDY_LIST_MAX);
     qr = db_query_buf(&sql);
     buf_free(&sql);
@@ -176,16 +244,26 @@ static void handle_study_list(Request *req, Response *res)
         res_error(res, 500, "db_error", "스터디 목록을 읽을 수 없습니다.");
         return;
     }
+    while (n < STUDY_LIST_MAX && (rows[n] = mysql_fetch_row(qr)) != NULL)
+        n++;
 
     buf_init(&b);
     buf_puts(&b, "{\"studies\":[");
-    while ((row = mysql_fetch_row(qr)) != NULL) {
-        if (!first)
-            buf_putc(&b, ',');
-        first = 0;
-        write_study_row(&b, row);
+    if (reco_id && n > 0) {
+        if (!write_reco_studies(&b, rows, n, reco_id)) {
+            buf_free(&b);
+            mysql_free_result(qr);
+            res_error(res, 500, "model_error", "추천 모델을 만들 수 없습니다.");
+            return;
+        }
+    } else {
+        for (i = 0; i < n; i++) {
+            if (i)
+                buf_putc(&b, ',');
+            write_study_row(&b, rows[i], NULL);
+        }
     }
-    mysql_free_result(qr);
+    mysql_free_result(qr);   /* rows 포인터를 다 쓴 뒤에 해제 */
     buf_puts(&b, "]}");
     res_json_buf(res, 200, &b);
     buf_free(&b);
@@ -193,8 +271,9 @@ static void handle_study_list(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 만들기 · 상세 · 삭제 */
 
-/* POST /api/studies {name, description?, max_members?, end_date?, role?} - 만든 사람이 방장이자 첫 멤버가 된다.
- * role 은 방장 자신의 역할 (member/mentor/mentee). 없거나 모르는 값이면 member. */
+/* POST /api/studies {name, description?, max_members?, end_date?, department_id?, role?}
+ * 만든 사람이 방장이자 첫 멤버가 된다. role 은 방장 자신의 역할 (member/mentor/mentee). 없거나 모르는 값이면 member.
+ * department_id 는 대상 학과 (없거나 0 이면 학과 무관). */
 static void handle_study_create(Request *req, Response *res)
 {
     CurrentUser u;
@@ -202,6 +281,7 @@ static void handle_study_create(Request *req, Response *res)
     char *name = NULL, *desc = NULL;
     const char *end_date, *role;
     int max;
+    unsigned dept_id;
     Buf sql;
     unsigned long long gid;
 
@@ -215,6 +295,7 @@ static void handle_study_create(Request *req, Response *res)
     desc = str_dup(json_str(in, "description", ""));
     max = (int)json_int(in, "max_members", 10);
     end_date = clean_date(json_str(in, "end_date", NULL));   /* 형식이 틀리거나 없으면 NULL (종료일 없음) */
+    dept_id = (unsigned)json_int(in, "department_id", 0);
     role = role_code(json_str(in, "role", NULL));
     if (!role)
         role = "member";
@@ -252,13 +333,26 @@ static void handle_study_create(Request *req, Response *res)
         buf_free(&chk);
     }
 
+    if (dept_id) {
+        Buf chk;
+        buf_init(&chk);
+        db_sqlf(&chk, "SELECT COUNT(*) FROM departments WHERE id = %u", dept_id);
+        if (db_scalar(chk.data, 0) == 0)
+            dept_id = 0;   /* 없는 학과면 학과 무관으로 (api_books.c 와 같은 방식) */
+        buf_free(&chk);
+    }
+
     if (!db_begin()) {
         res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
         goto out;
     }
     buf_init(&sql);
-    db_sqlf(&sql, "INSERT INTO study_groups (owner_id, name, description, max_members, end_date) "
-                  "VALUES (%u, %Q, %Q, %d, %Q)", u.id, name, desc, max, end_date);
+    db_sqlf(&sql, "INSERT INTO study_groups (owner_id, name, description, max_members, end_date, department_id) "
+                  "VALUES (%u, %Q, %Q, %d, %Q, ", u.id, name, desc, max, end_date);
+    if (dept_id)
+        db_sqlf(&sql, "%u)", dept_id);
+    else
+        buf_puts(&sql, "NULL)");
     if (!db_exec_buf(&sql)) {
         buf_free(&sql);
         db_rollback();
@@ -321,18 +415,10 @@ static void handle_study_detail(Request *req, Response *res, unsigned gid)
 
     buf_init(&b);
     buf_puts(&b, "{\"study\":");
-    write_study_row(&b, row);
-    mysql_free_result(qr);
-
-    buf_init(&sql);
-    db_sqlf(&sql, "SELECT description FROM study_groups WHERE id = %u", gid);
-    qr = db_query_buf(&sql);
-    buf_free(&sql);
-    row = qr ? mysql_fetch_row(qr) : NULL;
+    write_study_row(&b, row, NULL);
     buf_puts(&b, ",\"description\":");
-    json_write_str(&b, row ? row[0] : "");
-    if (qr)
-        mysql_free_result(qr);
+    json_write_str(&b, row[15]);   /* STUDY_SELECT 의 마지막 열 = 소개 전체 */
+    mysql_free_result(qr);
 
     buf_putc(&b, ',');
     json_kv_bool(&b, "can_manage", u.id && study_manage_ok(gid, &u) == 1);

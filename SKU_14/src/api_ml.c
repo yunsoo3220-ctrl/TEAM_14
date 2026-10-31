@@ -20,7 +20,7 @@
 #include <string.h>
 #include <time.h>
 
-#define RELATED_MIN_SCORE 25      /* 이 점수 미만은 관련 없음으로 본다 */
+#define RELATED_MIN_SCORE ML_MIN_SCORE   /* 이 점수 미만은 관련 없음으로 본다 (스터디·전공책 추천과 같은 기준) */
 #define RELATED_MAX       60      /* /api/related 가 돌려줄 수 있는 최대 게시물 수 */
 
 /* 모델 상태를 JSON 객체로 쓴다. 화면의 "모델 정보" 상자에 표시된다. */
@@ -28,8 +28,8 @@ static void write_info(Buf *b, const MlInfo *info)
 {
     buf_putc(b, '{');
     /* 임베딩 차원이 0 이 아니면 딥러닝 임베딩도 함께 쓰는 중이다 */
-    json_kv_str(b, "name", info->dim ? "SKU14 자체 모델 (딥러닝 임베딩 + TF-IDF + Rocchio)"
-                                     : "SKU14 자체 모델 (TF-IDF + Rocchio)");   buf_putc(b, ',');
+    json_kv_str(b, "name", info->dim ? "서경스터디 자체 모델 (딥러닝 임베딩 + TF-IDF + Rocchio)"
+                                     : "서경스터디 자체 모델 (TF-IDF + Rocchio)");   buf_putc(b, ',');
     json_kv_str(b, "embedding_model", info->dim ? info->embed_model : NULL);  buf_putc(b, ',');
     json_kv_int(b, "embedding_dim", info->dim);                    buf_putc(b, ',');
     json_kv_int(b, "posts", info->posts);                          buf_putc(b, ',');

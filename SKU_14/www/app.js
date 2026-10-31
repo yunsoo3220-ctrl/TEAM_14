@@ -1,4 +1,4 @@
-/* SKU14 공모전 게시판 - 프런트엔드 (의존성 없음)
+/* 서경스터디 공모전 게시판 - 프런트엔드 (의존성 없음)
  * 서버의 /api/* 를 호출하고 해시 라우팅으로 화면을 바꾼다.
  *
  * 구조 개요
@@ -19,7 +19,7 @@ const state = {
   aiEnabled: false, /* 서버에 ANTHROPIC_API_KEY 가 있을 때만 AI 메뉴·추천을 보인다 */
   colleges: [],     /* [{id, name, departments:[{id,name}]}] */
   tags: [],         /* [{category, label, tags:[{id,name}]}] 관심 키워드 */
-  unread: 0,        /* 안 읽은 알림 수 (사이드바·상단 배지) */
+  unread: 0,        /* 안 읽은 알림 수 (상단 🔔 배지) */
   chatUnread: 0,    /* 채팅방 전체의 안 읽은 메시지 수 (사이드바 배지) */
 };
 
@@ -208,10 +208,41 @@ function setPageTitle(text) {
   document.getElementById('page-title').textContent = text;
 }
 
-/* 사이드바에서 현재 메뉴만 강조 (data-nav 값이 name 인 링크에 .on) */
+/* 사이드바·상단바에서 현재 메뉴만 강조 (data-nav 값이 name 인 링크에 .on) */
 function markNav(name) {
   for (const a of document.querySelectorAll('[data-nav]'))
     a.classList.toggle('on', a.dataset.nav === name);
+}
+
+/* 화면 위의 탭 줄 (예: 전체 / 내 학과 대상 / 학과별 추천). items = [[주소, 키, 이름], ...], current = 지금 탭의 키 */
+function subTabs(nav, items, current) {
+  for (const [hash, key, label] of items) {
+    const a = el('a', key === current ? 'on' : null, label);
+    a.href = hash;
+    if (key === current) a.setAttribute('aria-current', 'page');
+    nav.append(a);
+  }
+}
+
+/* 사이드바를 줄이면서 화면 안의 탭으로 옮긴 메뉴들 (예전의 "내 학과 대상", "학과별 추천", "팀원 모집") */
+const POST_TABS    = [['#/posts', 'all', '전체 공모전'], ['#/mine', 'mine', '내 학과 대상'], ['#/reco', 'reco', '학과별 추천']];
+const STUDY_TABS   = [['#/studies', 'all', '전체 스터디'], ['#/studies/major', 'major', '내 학과 대상'],
+                      ['#/studies/reco', 'reco', '학과별 추천']];
+const BOOK_TABS    = [['#/books', 'all', '전체 책'], ['#/books/major', 'major', '내 학과 대상'], ['#/books/reco', 'reco', '학과별 추천']];
+const RECRUIT_TABS = [['#/recruits', 'mine', '내가 쓴 모집글'], ['#/recruits/joined', 'joined', '참여 중인 팀'],
+                      ['#/recruits/all', 'all', '모집글 둘러보기']];
+
+/* 학과 번호 → 이름 (state.colleges 에서 찾는다, 없으면 '') */
+function deptName(id) {
+  for (const c of state.colleges)
+    for (const d of c.departments) if (d.id === Number(id)) return d.name;
+  return '';
+}
+
+/* 학과별 추천에서 볼 학과: 주소의 번호 > 내 학과 > 첫 번째 학과 */
+function recoDept(param) {
+  return Number(param) || (state.me && state.me.department_id)
+    || (state.colleges[0] && state.colleges[0].departments[0].id);
 }
 
 /* 로그인 상태에 따라 화면 테두리(사이드바 메뉴, 상단 사용자 정보, 히어로)를 다시 그린다.
@@ -219,14 +250,10 @@ function markNav(name) {
 function paintChrome() {
   const me = state.me;
 
-  /* 관리자 메뉴는 관리자에게만, 내 프로필은 로그인한 사람에게만 */
+  /* 관리자 메뉴는 관리자에게만, 내 모집 관리·채팅방은 로그인한 사람에게만 */
   document.getElementById('nav-admin').hidden = !(me && me.is_admin);
-  document.getElementById('nav-me').hidden = !me;
-  document.getElementById('nav-noti').hidden = !me;
+  document.getElementById('nav-recruit').hidden = !me;
   document.getElementById('nav-chat').hidden = !me;
-  /* label 안의 첫 텍스트 노드만 바꾼다 (뒤의 <small>Sign in</small> 은 그대로 두기 위해) */
-  document.getElementById('nav-login-label').firstChild.nodeValue =
-    me ? '로그아웃' : '로그인 · 가입';
 
   /* 상단 오른쪽 */
   const who = document.getElementById('who');
@@ -237,23 +264,30 @@ function paintChrome() {
     a.href = '#/login';
     who.append(a);
   } else {
-    /* 알림함 🔔 (안 읽은 알림이 있으면 빨간 숫자) */
+    /* 알림함 🔔 (안 읽은 알림이 있으면 빨간 숫자). 사이드바에는 알림함 메뉴가 없고 여기서만 연다 */
     const bell = el('a', 'bell');
     bell.href = '#/notifications';
+    bell.dataset.nav = 'notifications';   /* 알림함을 보는 동안 markNav 가 강조 */
     bell.title = '알림함';
     bell.setAttribute('aria-label', '알림함');
     bell.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9a6 6 0 0112 0c0 5 2 6.5 2 6.5H4S6 14 6 9z"/><path d="M10 19a2 2 0 004 0"/></svg>';   /* 고정 아이콘이라 innerHTML 을 써도 안전 */
     bell.append(Object.assign(el('span', 'bell-badge'), { hidden: true }));
     who.append(bell);
+    /* 내 이름을 누르면 내 프로필 (사이드바의 내 프로필 메뉴를 여기로 옮겼다) */
+    const meLink = el('a', 'me-link');
+    meLink.href = '#/me';
+    meLink.dataset.nav = 'me';
+    meLink.title = '내 프로필';
     const avatar = el('span', 'avatar', me.nickname.slice(0, 1));   /* 표시 이름 첫 글자 동그라미 */
     const box = el('span', 'whoami');
     box.append(
       el('b', null, `${me.nickname} 님`),
       el('small', null, me.is_admin ? '관리자' : (me.department_name || '소속 없음')),
     );
+    meLink.append(avatar, box);
     const out = el('button', 'ghost small', '로그아웃');
     out.onclick = logout;
-    who.append(avatar, box, out);
+    who.append(meLink, out);
   }
 
   paintHero();
@@ -271,11 +305,11 @@ function paintSuspend() {
                       el('small', null, `사유: ${me.suspend_reason || '-'}`));
 }
 
-/* 안 읽은 알림 수를 사이드바·상단 배지에 그린다 (99 넘으면 99+) */
+/* 안 읽은 알림 수를 상단 🔔 배지에, 안 읽은 채팅 수를 사이드바 채팅방 배지에 그린다 (99 넘으면 99+) */
 function paintUnread() {
   const n = state.me ? state.unread : 0;
   const text = n > 99 ? '99+' : String(n);
-  for (const b of document.querySelectorAll('[data-unread], .bell-badge')) {
+  for (const b of document.querySelectorAll('.bell-badge')) {
     b.hidden = !n;
     b.textContent = text;
   }
@@ -364,14 +398,15 @@ function tile(cls, value, label, note) {
   return n;
 }
 
-/* 누를 수 있는 타일: tile 로 만든 내용을 <a> 로 옮겨 담는다 */
-function linkTile(href, cls, value, label, note) {
+/* 누르면 onClick 을 부르는 타일 (공모전 목록의 빠른 필터). 고른 타일에는 on 클래스가 붙는다 */
+function buttonTile(cls, value, label, note, onClick) {
   const n = tile(cls, value, label, note);
-  const a = document.createElement('a');
-  a.href = href;
-  a.className = n.className;
-  a.replaceChildren(...n.childNodes);
-  return a;
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = n.className;
+  b.replaceChildren(...n.childNodes);
+  b.onclick = onClick;
+  return b;
 }
 
 /* ══════════════════════════════════════════════════ 게시판 목록 */
@@ -446,14 +481,16 @@ function mlCard(r) {
   head.append(tags, scoreRing(r.score));
 
   a.append(head, el('h3', null, r.title));
-  /* 근거 키워드 (src/ml.c 의 explain 결과) */
-  if (r.terms && r.terms.length) {
-    const why = el('div', 'reco-terms');
-    why.append(el('span', 'spark', '✦'), el('span', 'muted', '겹친 키워드'));
-    for (const t of r.terms) why.append(el('span', 'ttag hit', fmtTerm(t)));
-    a.append(why);
-  }
+  if (r.terms && r.terms.length) a.append(recoTerms(r.terms));
   return a;
+}
+
+/* 자체 모델이 찾은 근거 키워드 줄 (src/ml.c 의 explain 결과). 공모전·스터디·전공책 추천 카드가 함께 쓴다 */
+function recoTerms(terms) {
+  const why = el('div', 'reco-terms');
+  why.append(el('span', 'spark', '✦'), el('span', 'muted', '겹친 키워드'));
+  for (const t of terms) why.append(el('span', 'ttag hit', fmtTerm(t)));
+  return why;
 }
 
 /* 목록 위에 붙는 추천 영역. Claude 분석이 켜져 있으면 그 결과를, 아니면 자체 모델을 쓴다.
@@ -534,28 +571,21 @@ const TIERS = [
   { min: 0,  label: '참고',      note: '일부 주제가 겹치는 공모전' },
 ];
 
-/* #/reco/{학과번호} - 학과를 골라 자체 모델의 추천을 구간별로 본다. */
+/* #/reco/{학과번호} - 공모전 목록의 "학과별 추천" 탭. 학과를 골라 자체 모델의 추천을 구간별로 본다. */
 async function viewReco(deptParam) {
-  markNav('reco');
-  setPageTitle('학과별 추천');
+  markNav('posts');
+  setPageTitle('학과별 추천 공모전');
 
   const node = tpl('tpl-reco');
   const root = node.firstElementChild;
+  subTabs(root.querySelector('[data-tabs]'), POST_TABS, 'reco');
   const sel = root.querySelector('[data-reco-dept]');
   const groups = root.querySelector('[data-reco-groups]');
   const modelLine = root.querySelector('[data-model-line]');
 
-  /* 학과 선택 상자: 단과대학별 <optgroup> 으로 묶는다 */
-  for (const c of state.colleges) {
-    const g = document.createElement('optgroup');
-    g.label = c.name;
-    for (const d of c.departments) g.append(new Option(d.name, d.id));
-    sel.append(g);
-  }
-
-  /* 보여 줄 학과: 주소의 번호 > 내 학과 > 첫 번째 학과 */
+  fillDeptSelect(sel);   /* 학과 선택 상자: 단과대학별 <optgroup> 으로 묶는다 */
   const mine = state.me && state.me.department_id;
-  const dept = Number(deptParam) || mine || (state.colleges[0] && state.colleges[0].departments[0].id);
+  const dept = recoDept(deptParam);
   sel.value = String(dept);
   sel.onchange = () => { location.hash = `#/reco/${sel.value}`; };   /* 고르면 주소가 바뀌고 route() 가 다시 그림 */
 
@@ -598,13 +628,16 @@ async function viewReco(deptParam) {
   }
 }
 
-/* #/posts (forceMine = false) 또는 #/mine (true) - 공모전 목록 */
+/* #/posts (forceMine = false) 또는 #/mine (true) - 공모전 목록의 "전체 공모전" / "내 학과 대상" 탭 */
 async function viewList(forceMine) {
-  markNav(forceMine ? 'mine' : 'posts');
+  markNav('posts');
   setPageTitle(forceMine ? '내 학과 대상 공모전' : '공모전 목록');
+  if (forceMine && !state.me)
+    return renderTabNote(POST_TABS, 'mine', loginNote('로그인하면 내 학과가 참여할 수 있는 공모전만 모아 볼 수 있습니다.'));
 
   const node = tpl('tpl-list');
   const root = node.firstElementChild;
+  subTabs(root.querySelector('[data-tabs]'), POST_TABS, forceMine ? 'mine' : 'all');
   const listEl = root.querySelector('[data-list]');
   const countEl = root.querySelector('[data-count]');
   const tilesEl = root.querySelector('[data-tiles]');
@@ -618,14 +651,38 @@ async function viewList(forceMine) {
     deptSel.append(group);
   }
 
-  /* 필터 세 가지: 학과, 종류, "내 학과가 참여 가능한 것만" */
+  /* 필터 두 가지: 학과, 종류 ("내 학과가 참여 가능한 것만" 은 내 학과 대상 탭이 맡는다) */
   const filters = {
     department: deptSel,
     kind: root.querySelector('[data-f="kind"]'),
-    mine: root.querySelector('[data-f="mine"]'),
   };
-  if (!state.me) filters.mine.disabled = true;         /* 비로그인은 "내 학과" 를 알 수 없다 */
-  if (forceMine && state.me) filters.mine.checked = true;
+
+  /* 타일 빠른 필터: 누른 타일에 맞는 글만 목록에 남긴다 (학과·종류 필터와 함께 걸린다) */
+  const isSoon = p => {                                  /* 마감 0~7일 남은 공모전 */
+    const d = p.deadline ? daysLeft(p.deadline) : null;
+    return d !== null && d >= 0 && d <= 7;
+  };
+  const QUICK = {
+    all:       { title: '공모전',            test: () => true },
+    forme:     { title: '내가 참여 가능',    test: p => p.can_comment },
+    soon:      { title: '마감 7일 이내',     test: isSoon },
+    hackathon: { title: '해커톤',            test: p => p.kind === 'hackathon' },
+  };
+  let quick = 'all';
+  let loaded = null;                                     /* 마지막으로 불러온 글 (null = 불러오는 중·실패) */
+  const headEl = countEl.parentElement;
+
+  /* 불러온 글에 빠른 필터를 걸어 목록을 그린다 */
+  function show() {
+    headEl.firstChild.textContent = QUICK[quick].title + ' ';
+    for (const t of tilesEl.children) t.classList.toggle('on', t.dataset.quick === quick);
+    if (!loaded) return;
+    const posts = loaded.filter(QUICK[quick].test);
+    countEl.textContent = `(${posts.length})`;
+    listEl.replaceChildren(...(posts.length
+      ? posts.map(postItem)
+      : [el('p', 'empty', '조건에 맞는 공모전이 없습니다.')]));
+  }
 
   /* 현재 필터로 목록을 다시 불러온다 */
   async function reload() {
@@ -633,19 +690,29 @@ async function viewList(forceMine) {
     const qs = new URLSearchParams();
     if (filters.department.value) qs.set('department_id', filters.department.value);
     if (filters.kind.value) qs.set('kind', filters.kind.value);
-    if (filters.mine.checked) qs.set('mine', '1');
+    if (forceMine) qs.set('mine', '1');
 
+    loaded = null;
     listEl.replaceChildren(...skeleton(4));
     try {
-      const { posts } = await api(`/api/posts?${qs}`);   /* 구조 분해: 응답의 posts 만 꺼낸다 */
-      countEl.textContent = `(${posts.length})`;
-      listEl.replaceChildren(...(posts.length
-        ? posts.map(postItem)
-        : [el('p', 'empty', '조건에 맞는 공모전이 없습니다.')]));
+      ({ posts: loaded } = await api(`/api/posts?${qs}`));   /* 구조 분해: 응답의 posts 만 꺼낸다 */
+      show();
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
   }
+
+  /* 타일을 누르면 그 조건으로 거르고 목록으로 내려간다. 고른 타일을 다시 누르면 전체로 돌아간다 */
+  function pick(key) {
+    quick = quick === key ? 'all' : key;
+    show();
+    listEl.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  const quickTile = (key, cls, value, label, note) => {
+    const t = buttonTile(cls, value, label, note, () => pick(key));
+    t.dataset.quick = key;
+    return t;
+  };
 
   for (const f of Object.values(filters)) f.onchange = reload;   /* 필터가 바뀔 때마다 다시 불러오기 */
 
@@ -653,23 +720,21 @@ async function viewList(forceMine) {
   reload();
   if (!forceMine) mountReco(root.querySelector('[data-reco]'));
 
-  /* 타일은 필터와 무관한 전체 집계라 따로 한 번 불러온다. */
+  /* 타일의 숫자는 필터와 무관한 전체 집계라 따로 한 번 불러온다. */
   try {
     const { posts } = await api('/api/posts');
-    const soon = posts.filter(p => {                     /* 마감 0~7일 남은 공모전 수 */
-      const d = p.deadline ? daysLeft(p.deadline) : null;
-      return d !== null && d >= 0 && d <= 7;
-    }).length;
+    const soon = posts.filter(isSoon).length;
     const forMe = posts.filter(p => p.can_comment).length;
 
     tilesEl.replaceChildren(
-      tile('c1', posts.length, '전체 공모전', '학교 공지에서 수집'),
+      quickTile('all', 'c1', posts.length, '전체 공모전', '학교 공지에서 수집'),
       state.me
-        ? linkTile('#/mine', 'c2', forMe, '내가 참여 가능', state.me.department_name || '관리자')
+        ? quickTile('forme', 'c2', forMe, '내가 참여 가능', state.me.department_name || '관리자')
         : tile('c2', '—', '내가 참여 가능', '로그인이 필요합니다'),
-      tile('c3', soon, '마감 7일 이내', soon ? '서두르세요' : '임박한 공모전 없음'),
-      tile('c4', posts.filter(p => p.kind === 'hackathon').length, '해커톤', '개발·아이디어'),
+      quickTile('soon', 'c3', soon, '마감 7일 이내', soon ? '서두르세요' : '임박한 공모전 없음'),
+      quickTile('hackathon', 'c4', posts.filter(p => p.kind === 'hackathon').length, '해커톤', '개발·아이디어'),
     );
+    show();
   } catch { /* 타일은 없어도 목록은 보여준다 */ }
 }
 
@@ -965,12 +1030,22 @@ function viewAuth(register = false) {
   /* 표시 이름 미리보기. 서버가 만드는 값과 같은 규칙을 쓴다. */
   const reg = root.querySelector('[data-register]');
   const preview = reg.querySelector('[data-preview]');
+  /* 전화번호 세 칸을 010-0000-0000 하나로 합친다 */
+  const phoneEls = [...reg.querySelectorAll('[data-phone] input')];
+  const phoneOf = () => phoneEls.map(p => p.value.trim()).join('-');
   const refreshPreview = () => {
     const v = formValues(reg);
-    preview.textContent = displayName(v.name, v.phone) || '···';
+    preview.textContent = displayName(v.name, phoneOf()) || '···';
   };
   reg.querySelector('[name="name"]').oninput = refreshPreview;    /* 한 글자 입력할 때마다 */
-  reg.querySelector('[name="phone"]').oninput = refreshPreview;
+  /* 전화번호 칸: 숫자만 남기고, 칸이 차면 다음 칸으로 넘어간다 */
+  phoneEls.forEach((p, i) => {
+    p.oninput = () => {
+      p.value = p.value.replace(/\D/g, '').slice(0, p.maxLength);
+      if (p.value.length === p.maxLength && phoneEls[i + 1]) phoneEls[i + 1].focus();
+      refreshPreview();
+    };
+  });
 
   /* 관심 키워드 (선택, 0~8개) - 고르면 팀원 추천과 개인 맞춤 공모전 추천에 쓰인다 */
   const getTags = interestPicker(reg.querySelector('[data-interest-picker]'), [],
@@ -978,7 +1053,10 @@ function viewAuth(register = false) {
 
   /* 학교 이메일 인증
    * 흐름: [인증 코드 받기] → 메일로 6자리 → 코드 입력 후 [확인] → 이메일 잠금 → 나머지 입력 → [가입] */
-  const emailEl = reg.querySelector('[name="email"]');
+  const emailEl = reg.querySelector('[name="email_id"]');
+  /* 입력칸에는 아이디만 받는다. 습관적으로 전체 주소를 붙여 넣어도 @ 뒤는 버린다 */
+  const emailId = () => emailEl.value.trim().toLowerCase().split('@')[0];
+  const emailOf = () => `${emailId()}@skuniv.ac.kr`;
   const codeEl = reg.querySelector('[name="code"]');
   const codeRow = reg.querySelector('[data-code-row]');
   const sendBtn = reg.querySelector('[data-send-code]');
@@ -1012,10 +1090,10 @@ function viewAuth(register = false) {
 
   /* [인증 코드 받기] */
   sendBtn.onclick = async () => {
-    const email = emailEl.value.trim().toLowerCase();
-    emailEl.value = email;
+    const email = emailOf();
+    emailEl.value = emailId();
     if (!SCHOOL_EMAIL.test(email)) {
-      say('@skuniv.ac.kr 로 끝나는 학교 이메일을 입력하세요.', 'blocked');
+      say('학교 이메일 아이디를 입력하세요. (영문 소문자·숫자·. _ - 만 쓸 수 있습니다)', 'blocked');
       return emailEl.focus();
     }
     sendBtn.disabled = true;
@@ -1037,7 +1115,7 @@ function viewAuth(register = false) {
     }
   };
   emailEl.oninput = () => {                         /* 주소를 바꾸면 다시 받아야 한다 */
-    if (sentTo && emailEl.value.trim().toLowerCase() !== sentTo) {
+    if (sentTo && emailOf() !== sentTo) {
       sentTo = '';
       codeRow.hidden = true;
       clearInterval(tick);
@@ -1071,7 +1149,7 @@ function viewAuth(register = false) {
       timerEl.classList.add('done');
       reg.querySelector('[data-email-box]').classList.add('verified');
       say('이메일 인증이 완료되었습니다. 아래 정보를 입력하고 가입하세요.', 'ok');
-      reg.querySelector('[name="student_no"]').focus();
+      reg.querySelector('[name="name"]').focus();
     } catch (e) {
       say(e.message, 'blocked');   /* 서버가 남은 기회를 알려 준다 */
       verifyBtn.disabled = false;
@@ -1083,18 +1161,41 @@ function viewAuth(register = false) {
     if (ev.key === 'Enter') { ev.preventDefault(); verifyCode(); }
   };
 
+  /* 비밀번호 확인: 두 칸이 같은지 입력할 때마다 라벨 옆에 표시 */
+  const pwEl = reg.querySelector('[name="password"]');
+  const pw2El = reg.querySelector('[name="password_confirm"]');
+  const pwMatch = reg.querySelector('[data-pw-match]');
+  const refreshPwMatch = () => {
+    const same = pwEl.value === pw2El.value;
+    pwMatch.textContent = !pw2El.value ? '' : same ? '일치합니다' : '일치하지 않습니다';
+    pwMatch.className = same ? 'pw-ok' : 'pw-bad';
+  };
+  pwEl.oninput = pw2El.oninput = refreshPwMatch;
+
   /* [가입] 제출: 화면에서 한 번 더 확인한 뒤 서버로 (최종 검사는 서버가 한다) */
   reg.onsubmit = async ev => {
     ev.preventDefault();
     const v = formValues(ev.target);
-    v.email = (v.email || '').trim().toLowerCase();
-    if (!SCHOOL_EMAIL.test(v.email)) return toast('학교 이메일(@skuniv.ac.kr)을 입력하세요.');
+    v.email = emailOf();
+    delete v.email_id;
+    if (!SCHOOL_EMAIL.test(v.email)) return toast('학교 이메일 아이디를 입력하세요.');
     if (!sentTo) return toast('먼저 인증 코드 받기를 누르세요.');
     if (!verified) return toast('인증 코드를 입력하고 [확인]을 눌러 이메일 인증을 마치세요.');
     delete v.code;   /* 이미 [확인] 으로 인증했으므로 코드는 보내지 않는다 */
-    for (const [k, label] of [['student_no', '학번'], ['name', '이름'], ['phone', '전화번호'],
+    delete v.phone1; delete v.phone2; delete v.phone3;
+    v.phone = phoneEls.every(p => p.value) ? phoneOf() : '';   /* 한 칸이라도 비면 아래에서 '입력하세요' */
+    if (v.phone && !/^\d{2,3}-\d{3,4}-\d{4}$/.test(v.phone)) {
+      toast('전화번호를 끝까지 입력하세요.');
+      return phoneEls.find(p => p.value.length < p.maxLength)?.focus();
+    }
+    for (const [k, label] of [['name', '이름'], ['student_no', '학번'], ['phone', '전화번호'],
                               ['password', '비밀번호'], ['department_id', '소속 학과']])
       if (!v[k]) return toast(`${label}을(를) 입력하세요.`);
+    if (v.password !== v.password_confirm) {
+      toast('비밀번호 확인이 비밀번호와 다릅니다.');
+      return pw2El.focus();
+    }
+    delete v.password_confirm;   /* 서버에는 비밀번호 하나만 보낸다 */
     v.department_id = Number(v.department_id);
     v.interest_ids = getTags();
     const btn = reg.querySelector('button[type="submit"]');
@@ -1573,17 +1674,41 @@ function interestPicker(container, selected = [], { max = 8, countEl = null, min
   return () => [...chosen];
 }
 
-/* 로그인이 필요한 화면 대신 보여 줄 안내 + 로그인 버튼 */
-function requireLogin(message) {
+/* 로그인 안내 + 로그인 버튼 상자 */
+function loginNote(message) {
   const box = el('div', 'empty');
   box.append(message, el('br'));
   const a = el('a', 'btn small', '로그인 · 가입');
   a.href = '#/login';
   box.append(a);
-  render(box);
+  return box;
 }
 
-/* ══════════════════════════════════════════════ 팀원 모집 게시판 */
+/* 로그인이 필요한 화면 대신 보여 줄 안내 + 로그인 버튼 */
+function requireLogin(message) {
+  render(loginNote(message));
+}
+
+/* 탭 화면에서 지금 탭을 볼 수 없을 때: 탭 줄은 그대로 두고 그 아래에 안내(note)만 그린다 */
+function renderTabNote(tabs, current, note) {
+  const nav = el('nav', 'sub-tabs');
+  subTabs(nav, tabs, current);
+  const wrap = el('div', 'stack');
+  wrap.append(nav, note);
+  render(wrap);
+}
+
+/* "내 학과 대상" 탭을 볼 수 있는지 (로그인 + 소속 학과). 볼 수 없으면 안내를 그리고 false */
+function needMyDept(tabs, current, loginMessage) {
+  if (!state.me) { renderTabNote(tabs, current, loginNote(loginMessage)); return false; }
+  if (!state.me.department_id) {
+    renderTabNote(tabs, current, el('p', 'empty', '소속 학과가 있는 회원만 볼 수 있습니다.'));
+    return false;
+  }
+  return true;
+}
+
+/* ══════════════════════════════════════════════ 내 모집 관리 (팀원 모집글) */
 
 /* 마음에 들어요 버튼. 누른 기록은 AI 추천(관련 공모전·팀원 찾기)에도 반영된다.
  * r 객체(liked, like_count)를 직접 고쳐 상태를 유지하므로, 같은 r 을 쓰는 다른 곳과도 일치한다. */
@@ -1655,13 +1780,62 @@ function recruitCard(r) {
   return a;
 }
 
-/* #/recruits - 모집글 목록 (키워드·상태 필터, 최신순/나와 맞는 순 정렬) */
-async function viewRecruits() {
+/* 내가 쓴 모집글 카드: 목록 카드 아래에 팀 인원과 관리 버튼(팀원 찾기 · 모집 마감/다시 모집)을 붙인다.
+ * 카드 전체가 링크라서 버튼은 누를 때 카드로 이동하지 않게 막는다 (chatCardButton 과 같은 방식) */
+function myRecruitCard(r, reload) {
+  const a = recruitCard(r);
+  const button = (text, cls, onClick) => {
+    const b = el('button', cls, text);
+    b.type = 'button';
+    b.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); onClick(b); };
+    return b;
+  };
+  const tools = el('div', 'foot-tools');
+  if (r.status === 'open')
+    tools.append(button('팀원 찾기', 'small', () => { location.hash = `#/people/recruit/${r.id}`; }));
+  tools.append(button(r.status === 'open' ? '모집 마감' : '다시 모집', 'ghost small', async b => {
+    b.disabled = true;
+    try {
+      await api(`/api/recruits/${r.id}/status`, { method: 'PUT',
+        body: JSON.stringify({ status: r.status === 'open' ? 'closed' : 'open' }) });
+      toast(r.status === 'open' ? '모집을 마감했습니다.' : '다시 모집합니다.');
+      reload();
+    } catch (e) { toast(e.message); b.disabled = false; }
+  }));
+  const bar = el('div', 'manage-bar');
+  bar.append(el('span', 'muted small', `👥 팀 ${r.team_count}명 (글쓴이 포함)`), tools);
+  a.append(bar);
+  return a;
+}
+
+/* 내 모집 관리 탭마다 제목 · 설명 · 비었을 때 문구 */
+const RECRUIT_TAB_TEXT = {
+  mine:   { heading: '내가 쓴 모집글',
+            sub: '댓글을 남긴 회원을 팀원으로 받고, 모집을 마감하거나 다시 열 수 있습니다. 공모전 화면의 [이 공모전으로 팀원 모집] 으로도 쓸 수 있습니다.',
+            empty: '아직 쓴 모집글이 없습니다. 함께 나갈 공모전을 골라 첫 모집글을 써 보세요.' },
+  joined: { heading: '참여 중인 팀',
+            sub: '글쓴이가 팀원으로 받아 준 모집글입니다. 팀 채팅방으로 바로 갈 수 있습니다.',
+            empty: '아직 참여 중인 팀이 없습니다. 모집글 둘러보기에서 마음에 드는 팀에 댓글을 남겨 보세요.' },
+  all:    { heading: '모집글 둘러보기',
+            sub: '다른 회원이 올린 모집글입니다. 댓글로 참여 의사를 남기면 글쓴이가 팀원으로 받아 줍니다.',
+            empty: '조건에 맞는 모집글이 없습니다. 첫 모집글을 써 보세요.' },
+};
+
+/* #/recruits (내가 쓴 모집글), #/recruits/joined (참여 중인 팀), #/recruits/all (모집글 둘러보기)
+ * 앞의 두 탭은 /api/recruits?mine=1 (내가 쓰거나 팀원인 글, 마감한 글도) 을 글쓴이 여부로 나눈다.
+ * 둘러보기 탭만 키워드·상태 필터와 최신순/나와 맞는 순 정렬이 있다. */
+async function viewRecruits(tab = 'mine') {
   markNav('recruits');
-  setPageTitle('팀원 모집');
+  setPageTitle('내 모집 관리');
+  if (tab !== 'all' && !state.me)
+    return renderTabNote(RECRUIT_TABS, tab, loginNote('로그인하면 내가 쓴 모집글과 참여 중인 팀을 관리할 수 있습니다.'));
 
   const node = tpl('tpl-recruits');
   const root = node.firstElementChild;
+  subTabs(root.querySelector('[data-tabs]'), RECRUIT_TABS, tab);
+  const text = RECRUIT_TAB_TEXT[tab];
+  root.querySelector('[data-heading]').textContent = text.heading;
+  root.querySelector('[data-sub]').textContent = text.sub;
   const listEl = root.querySelector('[data-list]');
   const countEl = root.querySelector('[data-count]');
   const f = {
@@ -1669,6 +1843,9 @@ async function viewRecruits() {
     status: root.querySelector('[data-f="status"]'),
     sort: root.querySelector('[data-f="sort"]'),
   };
+  const filtersEl = root.querySelector('[data-filters]');
+  if (tab === 'all') filtersEl.hidden = false;
+  else filtersEl.remove();   /* 내 글·내 팀 탭에는 필터가 없다 (f 의 요소는 떼어 낸 채로 남아 있어도 된다) */
   /* 키워드 필터 선택 상자 (분류별 묶음) */
   for (const g of state.tags) {
     const og = document.createElement('optgroup');
@@ -1682,21 +1859,20 @@ async function viewRecruits() {
   else f.sort.value = 'match';
   if (!state.me) root.querySelector('[data-new]').href = '#/login';
 
-  if (!state.me) f.status.querySelector('[value="mine"]').disabled = true;
-
   async function reload() {
-    const mine = f.status.value === 'mine';   /* 내가 쓰거나 팀원으로 들어간 글 (마감한 글도) */
-    const qs = new URLSearchParams({ status: mine ? 'all' : f.status.value, sort: f.sort.value });
-    if (mine) qs.set('mine', '1');
-    if (f.tag.value) qs.set('tag', f.tag.value);
+    const qs = tab === 'all'
+      ? new URLSearchParams({ status: f.status.value, sort: f.sort.value })
+      : new URLSearchParams({ status: 'all', mine: '1' });
+    if (tab === 'all' && f.tag.value) qs.set('tag', f.tag.value);
     listEl.replaceChildren(...skeleton(4, 'sk-reco'));
     try {
       const r = await api(`/api/recruits?${qs}`);
-      countEl.textContent = `(${r.recruits.length})`;
-      listEl.replaceChildren(...(r.recruits.length
-        ? r.recruits.map(recruitCard)
-        : [el('p', 'empty', mine ? '아직 속한 팀이 없습니다. 모집글을 쓰거나 다른 팀에 참여해 보세요.'
-                                 : '조건에 맞는 모집글이 없습니다. 첫 모집글을 써 보세요.')]));
+      const items = tab === 'all' ? r.recruits
+        : r.recruits.filter(x => (x.author_id === state.me.id) === (tab === 'mine'));
+      countEl.textContent = `(${items.length})`;
+      listEl.replaceChildren(...(items.length
+        ? items.map(x => (tab === 'mine' ? myRecruitCard(x, reload) : recruitCard(x)))
+        : [el('p', 'empty', text.empty)]));
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
@@ -1765,6 +1941,14 @@ async function viewRecruit(id) {
   const isAuthor = state.me && state.me.id === r.author_id;
   const node = tpl('tpl-recruit');
   const root = node.firstElementChild;
+
+  /* 돌아갈 곳: 내 글 → 내 모집 관리, 내 팀 → 참여 중인 팀, 남의 글 → 연결된 공모전 (없으면 둘러보기) */
+  const back = root.querySelector('[data-back]');
+  [back.href, back.textContent] = isAuthor ? ['#/recruits', '← 내 모집 관리']
+    : r.in_team ? ['#/recruits/joined', '← 참여 중인 팀']
+    : r.post_id ? [`#/posts/${r.post_id}`, '← 공모전으로']
+    : ['#/recruits/all', '← 모집글 둘러보기'];
+  if (!r.in_team && r.post_id) markNav('posts');   /* 공모전 화면에서 들어온 남의 모집글 */
 
   const top = root.querySelector('[data-tags-top]');
   top.append(el('span', r.status === 'open' ? 'tag ok' : 'tag plain', r.status === 'open' ? '모집 중' : '모집 마감'));
@@ -1973,23 +2157,29 @@ const ROLE_LABEL = { mentor: '멘토', mentee: '멘티', member: '멤버' };
  * (예전의 멘토링 메뉴는 없앴다. 스터디에서 멘토·멘티를 정할 수 있다) */
 const STUDY = { path: 'studies', tpl: 'study', list: 'studies', title: '그룹 스터디', n: '스터디', eul: '스터디를', ga: '스터디가' };
 
-/* 스터디 목록 카드 */
+/* 스터디 목록 카드. 학과별 추천 탭에서는 관련도 게이지(score)와 겹친 키워드(terms)도 보인다 */
 function studyCard(s) {
   const full = s.member_count >= s.max_members;
   const a = el('a', 'recruit-card' + (full && !s.my_role ? ' closed' : ''));
   a.href = `#/${STUDY.path}/${s.id}`;
 
+  const top = el('div', 'reco-card-head');
   const tags = el('div', 'item-top');
   tags.append(el('span', full ? 'tag plain' : 'tag ok', `${s.member_count} / ${s.max_members}명`));
   if (s.mentor_count) tags.append(el('span', 'tag mentor', `멘토 ${s.mentor_count}`));
   if (s.mentee_count) tags.append(el('span', 'tag mentee', `멘티 ${s.mentee_count}`));
   if (s.my_role) tags.append(el('span', 'tag owner',
     state.me && state.me.id === s.owner_id ? '내가 방장' : `참여 중 · ${ROLE_LABEL[s.my_role]}`));
+  top.append(tags);
+  if (typeof s.score === 'number') top.append(scoreRing(s.score));
 
-  a.append(tags, el('h3', null, s.name));
+  a.append(top, el('h3', null, s.name));
   if (s.excerpt) a.append(el('p', 'item-summary excerpt', s.excerpt));
+  if (s.terms && s.terms.length) a.append(recoTerms(s.terms));
   const meta = el('div', 'item-meta');
-  meta.append(el('span', null, `방장 ${s.owner_nickname}`), el('span', null, s.created_at.slice(0, 10)));
+  meta.append(el('span', null, `방장 ${s.owner_nickname}`));
+  if (s.department) meta.append(el('span', null, `${s.department} 대상`));
+  meta.append(el('span', null, s.created_at.slice(0, 10)));
   if (s.end_date) meta.append(el('span', null, `~ ${s.end_date} 종료`));
   const foot = el('div', 'recruit-foot');
   foot.append(meta);
@@ -1998,30 +2188,62 @@ function studyCard(s) {
   return a;
 }
 
-/* #/studies - 스터디 목록 (전체 / 내가 속한 것) */
-async function viewStudies() {
+/* 스터디 목록. 탭(tab)마다 서버에 묻는 조건이 다르다.
+ *   all   #/studies              전체 (보기: 전체 / 내가 속한 스터디)
+ *   major #/studies/major        내 학과를 대상 학과로 정한 스터디
+ *   reco  #/studies/reco/{학과}  자체 모델이 이름·소개를 학과 전공 분야와 비교해 관련 있는 순으로 */
+async function viewStudies(tab = 'all', deptParam) {
   markNav(STUDY.path);
-  setPageTitle(STUDY.title);
+  setPageTitle(tab === 'major' ? '내 학과 대상 스터디' : tab === 'reco' ? '학과별 추천 스터디' : STUDY.title);
+  if (tab === 'major' && !needMyDept(STUDY_TABS, 'major', '로그인하면 내 학과 대상 스터디를 모아 볼 수 있습니다.')) return;
 
   const node = tpl(`tpl-${STUDY.list}`);
   const root = node.firstElementChild;
+  subTabs(root.querySelector('[data-tabs]'), STUDY_TABS, tab);
   const listEl = root.querySelector('[data-list]');
   const countEl = root.querySelector('[data-count]');
+  const heading = root.querySelector('[data-heading]');
+  const sub = root.querySelector('[data-sub]');
   const mineSel = root.querySelector('[data-f="mine"]');
+  const deptSel = root.querySelector('[data-f="dept"]');
+  /* 지금 탭에 쓰지 않는 필터 줄은 떼어 낸다 (mineSel 은 떼어 낸 뒤에도 값이 '' 로 남는다) */
+  if (tab !== 'all') root.querySelector('[data-filter-all]').remove();
+  if (tab === 'reco') root.querySelector('[data-filter-reco]').hidden = false;
+  else root.querySelector('[data-filter-reco]').remove();
   if (!state.me) {
     root.querySelector('[data-new]').href = '#/login';
     mineSel.querySelector('[value="1"]').disabled = true;
   }
 
+  const qs = new URLSearchParams();
+  let empty = `아직 ${STUDY.ga} 없습니다. 첫 ${STUDY.eul} 만들어 보세요.`;
+  if (tab === 'major') {
+    qs.set('dept', state.me.department_id);
+    heading.textContent = `${state.me.department_name} 대상 스터디`;
+    sub.textContent = '스터디를 만들 때 대상 학과를 내 학과로 정한 스터디입니다.';
+    empty = `아직 내 학과 대상 ${STUDY.ga} 없습니다. 첫 ${STUDY.eul} 만들어 보세요.`;
+  } else if (tab === 'reco') {
+    const dept = recoDept(deptParam);
+    fillDeptSelect(deptSel);
+    deptSel.value = String(dept);
+    deptSel.onchange = () => { location.hash = `#/${STUDY.path}/reco/${deptSel.value}`; };
+    qs.set('reco', dept);
+    heading.textContent = `${deptName(dept)} 추천 스터디`;
+    sub.textContent = '자체 AI 모델이 스터디 이름·소개·대상 학과를 학과의 전공 분야와 비교해 관련 있는 순서로 보여 줍니다.';
+    empty = `이 학과와 관련 있다고 판단한 ${STUDY.ga} 아직 없습니다.`;
+  }
+  sub.hidden = !sub.textContent;
+
   async function reload() {
     listEl.replaceChildren(...skeleton(4, 'sk-reco'));
+    if (mineSel.value) qs.set('mine', '1');
+    else qs.delete('mine');
     try {
-      const r = await api(`/api/studies${mineSel.value ? '?mine=1' : ''}`);
+      const r = await api(`/api/studies?${qs}`);
       countEl.textContent = `(${r.studies.length})`;
       listEl.replaceChildren(...(r.studies.length
         ? r.studies.map(studyCard)
-        : [el('p', 'empty', mineSel.value ? `아직 참여한 ${STUDY.ga} 없습니다.`
-                                          : `아직 ${STUDY.ga} 없습니다. 첫 ${STUDY.eul} 만들어 보세요.`)]));
+        : [el('p', 'empty', mineSel.value ? `아직 참여한 ${STUDY.ga} 없습니다.` : empty)]));
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
@@ -2039,6 +2261,9 @@ function viewStudyNew() {
 
   const node = tpl(`tpl-${STUDY.tpl}-new`);
   const form = node.querySelector('[data-form]');
+  const deptSel = form.querySelector('[data-dept]');
+  fillDeptSelect(deptSel);
+  if (state.me.department_id) deptSel.value = String(state.me.department_id);   /* 기본은 내 학과 (전공책 판매와 같다) */
   const now = new Date();   /* 종료일은 오늘부터 고를 수 있다 (지난 날짜면 바로 지워지므로) */
   form.elements.end_date.min = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   /* 아이콘뿐 아니라 칸 어디를 눌러도 달력이 펼쳐지게 */
@@ -2052,7 +2277,8 @@ function viewStudyNew() {
       const out = await api('/api/studies', {
         method: 'POST',
         body: JSON.stringify({ name: v.name, description: v.description, max_members: Number(v.max_members || 6),
-                               end_date: v.end_date || null, role: v.role }),
+                               end_date: v.end_date || null, department_id: Number(v.department_id) || null,
+                               role: v.role }),
       });
       toast(`${STUDY.eul} 만들었습니다. 멤버를 추가해 보세요.`);
       location.hash = `#/${STUDY.path}/${out.id}`;
@@ -2130,6 +2356,7 @@ async function viewStudy(id) {
   root.querySelector('[data-owner]').textContent = s.owner_nickname;
   root.querySelector('[data-count]').textContent = `${s.member_count} / ${s.max_members}명`;
   root.querySelector('[data-mm]').textContent = `멘토 ${s.mentor_count} · 멘티 ${s.mentee_count}`;
+  root.querySelector('[data-dept]').textContent = s.department || '학과 무관';
   root.querySelector('[data-created]').textContent = s.created_at;
   root.querySelector('[data-end]').textContent = s.end_date ? `${s.end_date} (지나면 자동 삭제)` : '정하지 않음';
   root.querySelector('[data-description]').textContent = description || '소개가 없습니다.';
@@ -2239,12 +2466,8 @@ async function viewStudy(id) {
 
 /* 관리자 화면 위의 탭 (운영 / 회원 관리 / 전체 게시물) */
 function adminTabs(nav, current) {
-  for (const [hash, key, label] of [['#/admin', 'admin', '운영'], ['#/admin/users', 'users', '회원 관리'],
-                                    ['#/admin/content', 'content', '전체 게시물']]) {
-    const a = el('a', key === current ? 'on' : null, label);
-    a.href = hash;
-    nav.append(a);
-  }
+  subTabs(nav, [['#/admin', 'admin', '운영'], ['#/admin/users', 'users', '회원 관리'],
+                ['#/admin/content', 'content', '전체 게시물']], current);
 }
 
 /* 관리자가 회원 알림함으로 메시지를 보내는 작은 입력칸. row 안에 열었다 닫는다.
@@ -2713,7 +2936,8 @@ function fillDeptSelect(sel) {
   }
 }
 
-/* 책 목록 카드: 대표 사진, 판매 상태·책 상태, 제목, 저자·과목, 가격 */
+/* 책 목록 카드: 대표 사진, 판매 상태·책 상태, 제목, 저자·과목, 가격
+ * 학과별 추천 탭에서는 사진 위에 관련도 게이지(score), 아래에 겹친 키워드(terms)가 붙는다 */
 function bookCard(b) {
   const a = el('a', 'book-card' + (b.status === 'sold' ? ' sold' : ''));
   a.href = `#/books/${b.id}`;
@@ -2729,6 +2953,11 @@ function bookCard(b) {
   } else {
     thumb.append(el('span', null, '📚'));
   }
+  if (typeof b.score === 'number') {
+    const ring = scoreRing(b.score);
+    ring.classList.add('book-score');
+    thumb.append(ring);
+  }
 
   const body = el('div', 'book-body');
   const tags = el('div', 'item-top');
@@ -2739,6 +2968,7 @@ function bookCard(b) {
   const sub = [b.author, b.course].filter(Boolean).join(' · ');
   if (sub) body.append(el('p', 'book-sub', sub));
   body.append(el('p', 'book-price' + (b.price ? '' : ' free'), priceText(b.price)));
+  if (b.terms && b.terms.length) body.append(recoTerms(b.terms));
   const meta = el('div', 'item-meta');
   meta.append(el('span', null, b.seller_nickname), el('span', null, b.created_at.slice(5, 10).replace('-', '/')));
   if (b.comment_count) meta.append(el('span', null, `문의 ${b.comment_count}`));
@@ -2748,15 +2978,23 @@ function bookCard(b) {
   return a;
 }
 
-/* #/books - 책 목록 (검색, 학과, 판매 상태, 정렬) */
-async function viewBooks() {
+/* 책 목록. 탭(tab)마다 서버에 묻는 조건이 다르다.
+ *   all   #/books              전체 (검색, 학과, 판매 상태, 정렬)
+ *   major #/books/major        판매 글의 학과가 내 학과인 책 (학과 칸 대신 내 학과로 고정)
+ *   reco  #/books/reco/{학과}  자체 모델이 제목·과목·설명을 학과 전공 분야와 비교해 관련 있는 순으로 (판매 중만) */
+async function viewBooks(tab = 'all', deptParam) {
   markNav('books');
-  setPageTitle('전공책 장터');
+  setPageTitle(tab === 'major' ? '내 학과 대상 전공책' : tab === 'reco' ? '학과별 추천 전공책' : '전공책 장터');
+  if (tab === 'major' && !needMyDept(BOOK_TABS, 'major', '로그인하면 내 학과 전공책만 모아 볼 수 있습니다.')) return;
 
   const node = tpl('tpl-books');
   const root = node.firstElementChild;
+  subTabs(root.querySelector('[data-tabs]'), BOOK_TABS, tab);
   const listEl = root.querySelector('[data-list]');
   const countEl = root.querySelector('[data-count]');
+  const heading = root.querySelector('[data-heading]');
+  const sub = root.querySelector('[data-sub]');
+  const form = root.querySelector('[data-filters]');
   const f = name => root.querySelector(`[data-f="${name}"]`);
   fillDeptSelect(f('dept'));
   if (!state.me) {
@@ -2764,20 +3002,42 @@ async function viewBooks() {
     f('status').querySelector('[value="mine"]').disabled = true;
   }
 
+  let reco = 0;   /* 학과별 추천 탭에서 고른 학과 */
+  if (tab === 'major') {
+    f('dept').value = String(state.me.department_id);
+    root.querySelector('[data-dept-filter]').hidden = true;
+    form.classList.replace('four', 'three');
+    heading.textContent = `${state.me.department_name} 전공책`;
+    sub.textContent = '판매 글에 학과를 내 학과로 정한 책입니다.';
+  } else if (tab === 'reco') {
+    const deptSel = root.querySelector('[data-reco-dept]');
+    reco = recoDept(deptParam);
+    fillDeptSelect(deptSel);
+    deptSel.value = String(reco);
+    deptSel.onchange = () => { location.hash = `#/books/reco/${deptSel.value}`; };
+    form.hidden = true;   /* 떼어 내지 않는다: reload 가 f() 로 그 안의 칸을 찾는다 */
+    root.querySelector('[data-filter-reco]').hidden = false;
+    heading.textContent = `${deptName(reco)} 추천 전공책`;
+    sub.textContent = '자체 AI 모델이 책 제목·과목·설명을 학과의 전공 분야와 비교해 관련 있는 순서로 보여 줍니다. 판매 완료된 책은 빠집니다.';
+  }
+  sub.hidden = !sub.textContent;
+
   async function reload() {
     listEl.replaceChildren(...skeleton(6, 'sk-reco'));
     const st = f('status').value;
-    const qs = new URLSearchParams({ sort: f('sort').value, status: st === 'mine' ? 'all' : st });
-    if (f('q').value.trim()) qs.set('q', f('q').value.trim());
-    if (f('dept').value) qs.set('dept', f('dept').value);
-    if (st === 'mine') qs.set('mine', '1');
+    const qs = reco ? new URLSearchParams({ reco })
+      : new URLSearchParams({ sort: f('sort').value, status: st === 'mine' ? 'all' : st });
+    if (!reco && f('q').value.trim()) qs.set('q', f('q').value.trim());
+    if (!reco && f('dept').value) qs.set('dept', f('dept').value);
+    if (!reco && st === 'mine') qs.set('mine', '1');
     try {
       const r = await api(`/api/books?${qs}`);
       countEl.textContent = `(${r.books.length})`;
       listEl.replaceChildren(...(r.books.length
         ? r.books.map(bookCard)
-        : [el('p', 'empty', st === 'mine' ? '아직 올린 판매 글이 없습니다.'
-                                          : '조건에 맞는 책이 없습니다. 다 본 전공책을 올려 보세요.')]));
+        : [el('p', 'empty', reco ? '이 학과와 관련 있다고 판단한 판매 중인 책이 아직 없습니다.'
+                          : st === 'mine' ? '아직 올린 판매 글이 없습니다.'
+                          : '조건에 맞는 책이 없습니다. 다 본 전공책을 올려 보세요.')]));
     } catch (e) {
       listEl.replaceChildren(el('p', 'empty', e.message));
     }
@@ -3250,7 +3510,7 @@ async function viewChats() {
       const empty = el('div', 'empty');
       empty.append(el('p', null, '아직 들어간 모임이 없습니다.'));
       const links = el('div', 'row chat-empty-links');
-      for (const [href, text] of [['#/recruits', '팀원 모집 보기'], ['#/studies', '그룹 스터디 보기']]) {
+      for (const [href, text] of [['#/recruits/all', '모집글 둘러보기'], ['#/studies', '그룹 스터디 보기']]) {
         const a = el('a', 'btn ghost small', text);
         a.href = href;
         links.append(a);
@@ -3492,8 +3752,8 @@ function route() {
   refreshUnread();
   const parts = (location.hash || '#/posts').slice(2).split('/');
 
-  /* 히어로는 목록 화면에만 보인다. 상세·로그인·관리자 화면은 바로 본문부터. */
-  const isList = !parts[0] || parts[0] === 'mine' || (parts[0] === 'posts' && !parts[1]);
+  /* 히어로는 공모전 목록의 세 탭에만 보인다. 상세·로그인·관리자 화면은 바로 본문부터. */
+  const isList = !parts[0] || parts[0] === 'mine' || parts[0] === 'reco' || (parts[0] === 'posts' && !parts[1]);
   document.getElementById('hero').hidden = !isList;
 
   if (parts[0] === 'login') {
@@ -3510,16 +3770,21 @@ function route() {
   if (parts[0] === 'mine') return viewList(true);
   if (parts[0] === 'reco') return viewReco(parts[1]);
   if (parts[0] === 'recruits' && parts[1] === 'new') return viewRecruitNew(parts[2]);
+  if (parts[0] === 'recruits' && (parts[1] === 'joined' || parts[1] === 'all')) return viewRecruits(parts[1]);
   if (parts[0] === 'recruits' && parts[1]) return viewRecruit(Number(parts[1]));
-  if (parts[0] === 'recruits') return viewRecruits();
+  if (parts[0] === 'recruits') return viewRecruits('mine');
   if (parts[0] === 'studies' && parts[1] === 'new') return viewStudyNew();
+  if (parts[0] === 'studies' && parts[1] === 'major') return viewStudies('major');
+  if (parts[0] === 'studies' && parts[1] === 'reco') return viewStudies('reco', parts[2]);
   if (parts[0] === 'studies' && parts[1]) return viewStudy(Number(parts[1]));
-  if (parts[0] === 'studies') return viewStudies();
+  if (parts[0] === 'studies') return viewStudies('all');
   /* 예전 멘토링 주소 (알림·메일 링크): 멘토링은 그룹 스터디로 옮겼다 */
   if (parts[0] === 'mentoring') { location.hash = parts[1] && parts[1] !== 'new' ? `#/studies/${parts[1]}` : '#/studies'; return; }
   if (parts[0] === 'books' && parts[1] === 'new') return viewBookNew();
+  if (parts[0] === 'books' && parts[1] === 'major') return viewBooks('major');
+  if (parts[0] === 'books' && parts[1] === 'reco') return viewBooks('reco', parts[2]);
   if (parts[0] === 'books' && parts[1]) return viewBook(Number(parts[1]));
-  if (parts[0] === 'books') return viewBooks();
+  if (parts[0] === 'books') return viewBooks('all');
   if (parts[0] === 'chats' && parts[2]) return viewChat(parts[1], Number(parts[2]));
   if (parts[0] === 'chats') return viewChats();
   if (parts[0] === 'notifications' && parts[1]) return viewNotification(Number(parts[1]));

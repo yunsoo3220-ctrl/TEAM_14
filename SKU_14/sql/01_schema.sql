@@ -293,12 +293,15 @@ CREATE TABLE study_groups (
   name        VARCHAR(100)  NOT NULL,                 -- 스터디 이름
   description VARCHAR(1000) NOT NULL DEFAULT '',
   max_members SMALLINT      NOT NULL DEFAULT 10,      -- 정원 (2~50, 서버에서 검사)
+  department_id INT UNSIGNED NULL,                    -- 대상 학과 (NULL = 학과 무관). "내 학과 대상" 탭이 이 값으로 거른다
   end_date    DATE          NULL,                    -- 종료일 (지나면 자동 삭제, NULL = 없음)
   kind        ENUM('study','mentoring') NOT NULL DEFAULT 'study',  -- 늘 'study' (멘토링 메뉴는 없앴다. 예전 DB 와 맞추려고 남김)
   created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY ix_study_groups_owner (owner_id),
-  CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE
+  KEY ix_study_groups_department (department_id),
+  CONSTRAINT fk_sg_owner FOREIGN KEY (owner_id) REFERENCES users (id) ON DELETE CASCADE,
+  CONSTRAINT fk_sg_department FOREIGN KEY (department_id) REFERENCES departments (id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
 -- 스터디 멤버와 역할 (member = 일반, mentor = 멘토, mentee = 멘티)

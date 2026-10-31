@@ -1332,6 +1332,77 @@ int ml_predict_departments(const char *title, const char *body, MlHit *out, int 
     return n;
 }
 
+/* 게시물 모델 밖의 글 n 개를 학과 하나와의 관련도 순으로 (ml.h 참고).
+ * ml_predict_departments 와 같은 방식으로 글마다 벡터를 만들되, 임베딩은 n 개를 한 번에 구한다. */
+int ml_rank_texts(unsigned department_id, const unsigned *ids, const char *const *titles,
+                  const char *const *bodies, int n, int min_score, MlHit *out, MlInfo *info)
+{
+    float *emb = NULL;   /* n x dim, 글마다 임베딩 */
+    int di = -1, i, m = 0;   /* m: min_score 를 넘어 out 에 담은 수 */
+
+    ensure_init();
+    mutex_lock(&g_lock);
+    if (!ensure_model(0)) {
+        mutex_unlock(&g_lock);
+        return -1;
+    }
+    fill_info(info);
+
+    for (i = 0; i < g_model.ndepts; i++)
+        if (g_model.depts[i].id == department_id)
+            di = i;
+    if (di < 0 || n <= 0) {
+        mutex_unlock(&g_lock);
+        return 0;
+    }
+
+    /* 임베딩 서비스 왕복은 한 번만. 못 구하거나 차원이 모델과 다르면 TF-IDF 쪽만 쓴다 */
+    if (g_model.dim) {
+        char **texts = (char **)calloc((size_t)n, sizeof *texts);
+        int ok = texts != NULL, dim = 0;
+
+        for (i = 0; ok && i < n; i++)
+            ok = (texts[i] = join3(titles[i], bodies[i], NULL)) != NULL;
+        if (ok)
+            emb = embed_all("passage", texts, n, &dim, NULL, 0);
+        free_texts(texts, n);
+        if (emb && dim != g_model.dim) {
+            free(emb);
+            emb = NULL;
+        }
+        if (!emb)
+            log_warn("관련도: 임베딩을 구하지 못해 TF-IDF 쪽만으로 매깁니다.");
+    }
+
+    for (i = 0; i < n; i++) {
+        Vec v = { 0 };
+        double e, s;
+
+        /* 학습 때와 똑같이: 제목 2배 + 본문, 학습 말뭉치의 IDF */
+        tokenize(&v, titles[i] ? titles[i] : "", TITLE_WEIGHT);
+        tokenize(&v, bodies[i] ? bodies[i] : "", 1.0f);
+        vec_compact(&v);
+        apply_tfidf(&v, g_model.df, g_model.ndf, g_model.ndocs);
+        /* 임베딩이 없으면 평균(mu)으로 두어 그 몫은 0 이 된다 (ml_predict_departments 와 같음) */
+        e = emb ? dense_dot(&emb[(size_t)i * g_model.dim], &g_model.demb[(size_t)di * g_model.dim], g_model.dim)
+                : g_model.mu;
+        s = hybrid(vec_dot(&v, &g_model.depts[di].v), e, g_model.mu, g_model.dim);
+
+        out[m].score = to_score(s);
+        if (out[m].score >= min_score) {
+            out[m].id = ids[i];
+            out[m].prob = to_prob(s);
+            explain(&v, &g_model.depts[di].v, &out[m]);   /* 근거는 남는 글에만 (설명이 비싸므로) */
+            m++;
+        }
+        vec_free(&v);
+    }
+    qsort(out, (size_t)m, sizeof *out, hit_desc);   /* 같은 점수면 번호가 큰(최신) 글 먼저 */
+    free(emb);
+    mutex_unlock(&g_lock);
+    return m;
+}
+
 /* 강제 재학습 */
 int ml_retrain(MlInfo *info)
 {
