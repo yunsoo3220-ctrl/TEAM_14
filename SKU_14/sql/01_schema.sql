@@ -328,6 +328,9 @@ CREATE TABLE books (
   price          INT UNSIGNED  NOT NULL DEFAULT 0,      -- 가격(원), 0 = 나눔
   book_condition ENUM('new','good','fair','poor') NOT NULL DEFAULT 'good',  -- 새 책 / 깨끗함 / 필기 조금 / 필기 많음
   description    VARCHAR(2000) NOT NULL DEFAULT '',
+  trade_places   VARCHAR(200)  NOT NULL DEFAULT '',     -- 원하는 학교 장소 (예: 중앙도서관 · 정문)
+  trade_times    VARCHAR(200)  NOT NULL DEFAULT '',     -- 거래 가능한 시간 (예: 월·수 / 점심·오후)
+  trade_wish     VARCHAR(100)  NOT NULL DEFAULT '',     -- 희망 거래 시간 (예: 수요일 12:30)
   status         ENUM('selling','reserved','sold') NOT NULL DEFAULT 'selling',
   sold_at        DATETIME      NULL,                    -- 판매 완료한 시각 (30일 뒤 자동 삭제)
   created_at     DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,

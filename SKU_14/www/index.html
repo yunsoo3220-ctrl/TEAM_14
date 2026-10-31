@@ -465,7 +465,7 @@
 </template>
 
 <!-- ────────────────────────────────────────────── 전공책 장터
-     tpl-books: 목록, tpl-book-new: 판매 글 쓰기 (#/books/new), tpl-book: 상세·사진·문의 댓글 (#/books/{id})
+     tpl-books: 목록, tpl-book-new: 판매 글 쓰기·고치기 (#/books/new, #/books/{id}/edit), tpl-book: 상세·사진·문의 댓글 (#/books/{id})
      목록의 탭(data-tabs): 전체 책 #/books · 내 학과 대상 #/books/major · 학과별 추천 #/books/reco/{학과} -->
 <template id="tpl-books">
   <div class="stack">
@@ -508,7 +508,7 @@
   <div class="stack">
     <a class="back" href="#/books">← 전공책 장터</a>
     <section class="card">
-      <div class="card-head"><h2>책 팔기</h2></div>
+      <div class="card-head"><h2 data-form-title>책 팔기</h2></div>
       <form data-form class="stack-sm">
         <fieldset class="photo-field">
           <legend>책 사진 <small data-photo-count>최대 5장 · 첫 사진이 대표 사진</small></legend>
@@ -543,8 +543,12 @@
             <label><input type="radio" name="condition" value="poor"><span>필기 많음</span></label>
           </div>
         </div>
+        <fieldset class="trade-fields">
+          <legend>거래 정보 <small>선택 · 비워 두면 "협의"</small></legend>
+          <div data-trade class="stack-sm"></div>
+        </fieldset>
         <label><span>설명 <small>선택</small></span><textarea name="description" rows="5" maxlength="2000"
-          placeholder="필기·밑줄 정도, 거래 장소(예: 북악관 1층), 거래 가능한 시간을 적어 주세요."></textarea></label>
+          placeholder="필기·밑줄 정도 등 책 상태를 적어 주세요."></textarea></label>
         <div class="row"><button type="submit">판매 글 올리기</button></div>
       </form>
     </section>
@@ -571,6 +575,11 @@
         <div><dt>학과</dt><dd data-dept></dd></div>
         <div><dt>등록</dt><dd data-created></dd></div>
       </dl>
+      <section class="trade-box">
+        <h3>거래 정보</h3>
+        <div data-trade class="stack-sm"></div>
+        <div class="row" data-trade-actions></div>
+      </section>
       <p class="body" data-description></p>
       <div class="row owner-actions" data-owner hidden>
         <select data-status aria-label="판매 상태">
@@ -578,6 +587,7 @@
           <option value="reserved">예약 중</option>
           <option value="sold">판매 완료</option>
         </select>
+        <a class="btn ghost small" data-edit>✏ 글 수정</a>
         <button class="ghost small danger" data-delete>삭제</button>
       </div>
     </article>

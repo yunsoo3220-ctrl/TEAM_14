@@ -2926,6 +2926,124 @@ const BOOK_PHOTO_MAX = 5;
 const photoUrl = id => `/api/book-photos/${id}`;
 const priceText = n => (n ? `${n.toLocaleString('ko-KR')}원` : '나눔');
 
+/* 거래 정보 버튼에 쓰는 고정 목록. 장소는 우리 학교 건물에 맞게 고쳐 쓴다. */
+const BOOK_PLACES = ['정문', '중앙도서관', '학생회관', '학생식당', '기숙사 앞', '버스정류장'];
+const BOOK_DAYS   = ['월', '화', '수', '목', '금', '토', '일'];
+const BOOK_SLOTS  = [['오전', '9~12시'], ['점심', '12~13시'], ['오후', '13~18시'], ['저녁', '18시~']];
+
+/* 서버에 저장하는 글자 형식 (사람이 읽어도 되고, 다시 버튼으로 풀 수도 있다)
+ *   trade_places  "중앙도서관 · 정문"
+ *   trade_times   "월·수·금 / 점심·오후"   (요일만 / 시간대만 있으면 그쪽만)
+ *   trade_wish    "수요일 12:30"           (요일만 / 시각만도 된다) */
+const splitPlaces = s => (s || '').split(' · ').map(x => x.trim()).filter(Boolean);
+function splitTimes(s) {
+  const out = { days: [], slots: [] };
+  for (const part of (s || '').split(' / '))
+    for (const x of part.split('·').map(v => v.trim()).filter(Boolean))
+      if (BOOK_DAYS.includes(x)) out.days.push(x);
+      else if (BOOK_SLOTS.some(([k]) => k === x)) out.slots.push(x);
+  return out;
+}
+function joinTimes(days, slots) {
+  return [days.join('·'), slots.join('·')].filter(Boolean).join(' / ');
+}
+
+/* 여러 개 고르는 버튼 묶음 (체크박스). items = [[값, 작은 설명?], ...], picked = 처음 눌린 값들 */
+function pickChips(items, picked, label, single = false) {
+  const box = el('div', 'pick-chips');
+  box.setAttribute('role', single ? 'radiogroup' : 'group');
+  box.setAttribute('aria-label', label);
+  const name = 'pick-' + Math.random().toString(36).slice(2);
+  for (const [value, hint] of items) {
+    const l = el('label');
+    const input = el('input');
+    input.type = single ? 'radio' : 'checkbox';
+    input.name = name;
+    input.value = value;
+    input.checked = picked.includes(value);
+    const span = el('span', null, value);
+    if (hint) span.append(el('small', null, hint));
+    l.append(input, span);
+    box.append(l);
+  }
+  box.values = () => [...box.querySelectorAll('input:checked')].map(i => i.value);
+  return box;
+}
+
+/* 희망 거래 시간: 요일 고르기 + 시각 칸. "수요일 12:30" 형식으로 돌려준다. */
+function wishPicker(initial) {
+  const m = /^(?:([월화수목금토일])요일)?\s*(\d{1,2}:\d{2})?$/.exec((initial || '').trim()) || [];
+  const box = el('div', 'row wish-pick');
+  const day = el('select');
+  day.setAttribute('aria-label', '희망 요일');
+  day.append(new Option('요일 선택', ''), ...BOOK_DAYS.map(d => new Option(`${d}요일`, d)));
+  day.value = m[1] || '';
+  const time = el('input');
+  time.type = 'time';
+  time.step = 600;
+  time.setAttribute('aria-label', '희망 시각');
+  time.value = m[2] ? m[2].padStart(5, '0') : '';
+  box.append(day, time);
+  box.value = () => [day.value && `${day.value}요일`, time.value].filter(Boolean).join(' ');
+  return box;
+}
+
+/* 거래 정보 입력 칸 세 개 (판매 글 쓰기와 상세의 "거래 정보 바꾸기"에서 같이 쓴다).
+ * host 안에 그리고, 서버로 보낼 {trade_places, trade_times, trade_wish} 를 돌려주는 함수를 돌려준다. */
+function tradeFields(host, b = {}) {
+  const places = splitPlaces(b.trade_places);
+  const extra = places.filter(p => !BOOK_PLACES.includes(p));   /* 버튼에 없는 장소 = 직접 입력한 것 */
+  const placeChips = pickChips(BOOK_PLACES.map(p => [p]), places, '원하는 학교 장소');
+  const placeEtc = el('input');
+  placeEtc.maxLength = 60;
+  placeEtc.placeholder = '직접 입력 (예: 공학관 3층 라운지)';
+  placeEtc.value = extra.join(', ');
+
+  const t = splitTimes(b.trade_times);
+  const dayChips = pickChips(BOOK_DAYS.map(d => [d]), t.days, '거래 가능한 요일');
+  const slotChips = pickChips(BOOK_SLOTS, t.slots, '거래 가능한 시간대');
+  const wish = wishPicker(b.trade_wish);
+
+  const field = (title, hint, ...nodes) => {
+    const f = el('div', 'trade-field');
+    const head = el('span', 'field-label', title);
+    if (hint) head.append(' ', el('small', 'muted', hint));
+    f.append(head, ...nodes);
+    return f;
+  };
+  host.replaceChildren(
+    field('📍 원하는 학교 장소', '여러 곳 고를 수 있어요', placeChips, placeEtc),
+    field('🗓 거래 가능한 시간', '요일과 시간대를 눌러 고르세요', dayChips, slotChips),
+    field('⏰ 희망 거래 시간', '가장 좋은 때 하나', wish));
+
+  return () => ({
+    trade_places: [...placeChips.values(),
+                   ...placeEtc.value.split(',').map(x => x.trim().replace(/·/g, '')).filter(Boolean)].join(' · '),
+    trade_times: joinTimes(dayChips.values(), slotChips.values()),
+    trade_wish: wish.value(),
+  });
+}
+
+/* 상세 화면의 거래 정보 보기 (정하지 않은 칸은 "협의") */
+function tradeView(host, b) {
+  const row = (icon, title, chips) => {
+    const r = el('div', 'trade-row');
+    r.append(el('span', 'trade-key', `${icon} ${title}`));
+    const v = el('div', 'chips');
+    v.append(...(chips.length ? chips.map(c => el('span', 'chip', c)) : [el('span', 'muted', '협의')]));
+    r.append(v);
+    return r;
+  };
+  const t = splitTimes(b.trade_times);
+  const times = [t.days.join('·'), ...t.slots.map(k => `${k} ${BOOK_SLOTS.find(([x]) => x === k)[1]}`)]
+    .filter(Boolean);
+  if (!t.days.length && !t.slots.length && b.trade_times) times.push(b.trade_times);   /* 형식이 다른 옛 값 */
+  host.replaceChildren(
+    row('📍', '원하는 장소', splitPlaces(b.trade_places)),
+    row('🗓', '거래 가능 시간', times),
+    row('⏰', '희망 거래 시간', b.trade_wish ? [b.trade_wish] : []));
+}
+
 /* 학과 선택 상자에 단과대학별 학과를 채운다 (optgroup 으로 묶음) */
 function fillDeptSelect(sel) {
   for (const c of state.colleges) {
@@ -2968,6 +3086,11 @@ function bookCard(b) {
   const sub = [b.author, b.course].filter(Boolean).join(' · ');
   if (sub) body.append(el('p', 'book-sub', sub));
   body.append(el('p', 'book-price' + (b.price ? '' : ' free'), priceText(b.price)));
+  const places = splitPlaces(b.trade_places);
+  if (places.length || b.trade_wish) {
+    const where = places.length ? `📍 ${places[0]}${places.length > 1 ? ` 외 ${places.length - 1}` : ''}` : '';
+    body.append(el('p', 'book-trade', [where, b.trade_wish && `⏰ ${b.trade_wish}`].filter(Boolean).join('  ')));
+  }
   if (b.terms && b.terms.length) body.append(recoTerms(b.terms));
   const meta = el('div', 'item-meta');
   meta.append(el('span', null, b.seller_nickname), el('span', null, b.created_at.slice(5, 10).replace('-', '/')));
@@ -3080,11 +3203,19 @@ async function shrinkPhoto(file, maxSide = 1280) {
   }
 }
 
-/* #/books/new - 판매 글 쓰기 (사진은 카메라로 찍거나 앨범에서 고른다) */
-function viewBookNew() {
+/* #/books/new       - 판매 글 쓰기 (사진은 카메라로 찍거나 앨범에서 고른다)
+ * #/books/{id}/edit - 내 판매 글 고치기 (같은 화면에 원래 값을 채운다) */
+async function viewBookNew(editId) {
   markNav('books');
-  setPageTitle('책 팔기');
-  if (!state.me) return requireLogin('책을 팔려면 로그인하세요.');
+  setPageTitle(editId ? '판매 글 고치기' : '책 팔기');
+  if (!state.me) return requireLogin(editId ? '로그인 후 고칠 수 있습니다.' : '책을 팔려면 로그인하세요.');
+
+  let orig = null;   /* 고치기: 서버의 원래 글 */
+  if (editId) {
+    try { orig = await api(`/api/books/${editId}`); }
+    catch (e) { return renderMessage(e.message); }
+    if (!orig.can_manage) return renderMessage('내가 올린 판매 글만 고칠 수 있습니다.');
+  }
 
   const node = tpl('tpl-book-new');
   const form = node.querySelector('[data-form]');
@@ -3095,15 +3226,34 @@ function viewBookNew() {
   const deptSel = node.querySelector('[data-dept]');
   fillDeptSelect(deptSel);
   if (state.me.department_id) deptSel.value = String(state.me.department_id);   /* 기본은 내 학과 */
+  const tradeValues = tradeFields(node.querySelector('[data-trade]'), orig ? orig.book : {});
 
-  const photos = [];   /* 줄인 사진 data URL 목록 (순서 = 올릴 순서, 첫 장이 대표) */
+  /* 사진 목록 (순서 = 올릴 순서, 첫 장이 대표). 숫자 = 이미 올린 사진 id, 글자 = 새로 줄인 사진 data URL */
+  const photos = orig ? [...orig.photos] : [];
+  const submitText = editId ? '고친 내용 저장' : '판매 글 올리기';
+  if (orig) {
+    const b = orig.book;
+    const back = node.querySelector('.back');
+    back.href = `#/books/${editId}`;
+    back.textContent = '← 판매 글로 돌아가기';
+    node.querySelector('[data-form-title]').textContent = '판매 글 고치기';
+    form.querySelector('button[type="submit"]').textContent = submitText;
+    const f = form.elements;   /* form.title 은 폼 자신의 title 속성이라 elements 로 찾는다 */
+    f.title.value = b.title;
+    f.author.value = b.author;
+    f.course.value = b.course;
+    deptSel.value = b.department_id ? String(b.department_id) : '';
+    f.price.value = b.price;
+    f.condition.value = b.condition;
+    f.description.value = orig.description;
+  }
   let busy = 0;        /* 줄이는 중인 사진 수 */
 
   function paint() {
     picker.replaceChildren(...photos.map((data, i) => {
       const slot = el('div', 'photo-slot');
       const img = el('img');
-      img.src = data;
+      img.src = typeof data === 'number' ? photoUrl(data) : data;
       img.alt = `사진 ${i + 1}`;
       const x = el('button', 'photo-x', '×');
       x.type = 'button';
@@ -3142,22 +3292,22 @@ function viewBookNew() {
     if (!photos.length && !(await askConfirm('사진 없이 올릴까요? 사진이 있으면 훨씬 빨리 팔립니다.'))) return;
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
-    btn.textContent = '올리는 중…';
+    btn.textContent = editId ? '저장하는 중…' : '올리는 중…';
     try {
-      const out = await api('/api/books', {
-        method: 'POST',
+      const out = await api(editId ? `/api/books/${editId}` : '/api/books', {
+        method: editId ? 'PUT' : 'POST',
         body: JSON.stringify({
           title: v.title, author: v.author, course: v.course,
           department_id: Number(v.department_id) || null, price: Number(v.price || 0),
-          condition: v.condition, description: v.description, photos,
+          condition: v.condition, description: v.description, photos, ...tradeValues(),
         }),
       });
-      toast('판매 글을 올렸습니다.');
-      location.hash = `#/books/${out.id}`;
+      toast(editId ? '판매 글을 고쳤습니다.' : '판매 글을 올렸습니다.');
+      location.hash = `#/books/${editId || out.id}`;
     } catch (e) {
       toast(e.message);
       btn.disabled = false;
-      btn.textContent = '판매 글 올리기';
+      btn.textContent = submitText;
     }
   };
   render(node);
@@ -3218,6 +3368,63 @@ async function viewBook(id) {
   root.querySelector('[data-created]').textContent = b.created_at;
   root.querySelector('[data-description]').textContent = description || '설명이 없습니다.';
 
+  /* 거래 정보: 판매자는 [바꾸기], 사는 사람은 [이 조건으로 거래 요청] (문의 칸에 글을 채워 준다) */
+  const tradeBox = root.querySelector('[data-trade]');
+  const tradeActs = root.querySelector('[data-trade-actions]');
+  tradeView(tradeBox, b);
+  const isSeller = state.me && state.me.id === b.seller_id;
+  if (can_manage) {
+    const edit = el('button', 'ghost small', '✏ 거래 정보 바꾸기');
+    edit.type = 'button';
+    edit.onclick = () => {
+      const values = tradeFields(tradeBox, b);
+      const save = el('button', 'small', '저장');
+      const cancel = el('button', 'ghost small', '취소');
+      save.type = cancel.type = 'button';
+      cancel.onclick = () => viewBook(id);
+      save.onclick = async () => {
+        save.disabled = true;
+        try {
+          await api(`/api/books/${id}/trade`, { method: 'PUT', body: JSON.stringify(values()) });
+          toast('거래 정보를 바꿨습니다.');
+          viewBook(id);
+        } catch (e) { toast(e.message); save.disabled = false; }
+      };
+      tradeActs.replaceChildren(save, cancel);
+    };
+    tradeActs.append(edit);
+  }
+  if (!isSeller && b.status !== 'sold') {
+    const ask = el('button', 'small', '🤝 이 조건으로 거래 요청');
+    ask.type = 'button';
+    ask.onclick = () => {
+      if (!state.me) return toast('로그인 후 거래를 요청할 수 있습니다.');
+      /* 판매자가 고른 장소 중 하나 + 희망 시간(판매자 희망 시간으로 미리 채움) */
+      const places = splitPlaces(b.trade_places);
+      const pick = el('div', 'trade-ask');
+      const placeChips = places.length ? pickChips(places.map(p => [p]), [places[0]], '만날 장소', true) : null;
+      const wish = wishPicker(b.trade_wish);
+      const go = el('button', 'small', '문의 칸에 넣기');
+      go.type = 'button';
+      go.onclick = () => {
+        const where = placeChips ? placeChips.values()[0] : '';
+        const when = wish.value();
+        const text = `${where ? `📍 ${where}` : ''}${where && when ? ', ' : ''}${when ? `⏰ ${when}` : ''}`;
+        const ta = root.querySelector('[data-comment-form] textarea');
+        ta.value = `${text ? text + ' 에 ' : ''}거래 가능할까요? 「${b.title}」 사고 싶습니다.`;
+        ta.focus();
+        ta.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        pick.remove();
+        ask.hidden = false;
+      };
+      if (placeChips) pick.append(el('span', 'field-label', '📍 만날 장소'), placeChips);
+      pick.append(el('span', 'field-label', '⏰ 내가 원하는 시간'), wish, go);
+      ask.hidden = true;
+      tradeBox.after(pick);
+    };
+    tradeActs.append(ask);
+  }
+
   /* 판매자·관리자: 판매 상태 바꾸기, 삭제 */
   if (can_manage) {
     const box = root.querySelector('[data-owner]');
@@ -3232,6 +3439,7 @@ async function viewBook(id) {
         viewBook(id);
       } catch (e) { toast(e.message); sel.value = b.status; }
     };
+    box.querySelector('[data-edit]').href = `#/books/${id}/edit`;
     box.querySelector('[data-delete]').onclick = async () => {
       if (!(await askConfirm('이 판매 글을 지울까요? 사진과 문의 댓글도 함께 지워집니다.'))) return;
       try {
@@ -3780,9 +3988,10 @@ function route() {
   if (parts[0] === 'studies') return viewStudies('all');
   /* 예전 멘토링 주소 (알림·메일 링크): 멘토링은 그룹 스터디로 옮겼다 */
   if (parts[0] === 'mentoring') { location.hash = parts[1] && parts[1] !== 'new' ? `#/studies/${parts[1]}` : '#/studies'; return; }
-  if (parts[0] === 'books' && parts[1] === 'new') return viewBookNew();
+  if (parts[0] === 'books' && parts[1] === 'new') return viewBookNew(0);
   if (parts[0] === 'books' && parts[1] === 'major') return viewBooks('major');
   if (parts[0] === 'books' && parts[1] === 'reco') return viewBooks('reco', parts[2]);
+  if (parts[0] === 'books' && parts[1] && parts[2] === 'edit') return viewBookNew(Number(parts[1]));
   if (parts[0] === 'books' && parts[1]) return viewBook(Number(parts[1]));
   if (parts[0] === 'books') return viewBooks('all');
   if (parts[0] === 'chats' && parts[2]) return viewChat(parts[1], Number(parts[2]));

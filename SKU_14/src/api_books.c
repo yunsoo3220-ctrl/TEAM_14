@@ -3,9 +3,12 @@
  *   GET    /api/books                     책 목록 ?q=검색어&dept=학과id&status=on|all&mine=1&sort=new|price_asc|price_desc
  *                                         ?reco=학과id 면 판매 중인 책을 그 학과와 관련 있는 순으로 (자체 모델, 학과별 추천)
  *   POST   /api/books                     판매 글 쓰기 {title, author?, course?, department_id?, price,
- *                                                       condition, description?, photos:["data:image/jpeg;base64,..."]} (로그인)
+ *                                                       condition, description?, photos:["data:image/jpeg;base64,..."],
+ *                                                       trade_places?, trade_times?, trade_wish?} (로그인)
  *   GET    /api/books/{id}                책 + 사진 번호 + 문의 댓글
+ *   PUT    /api/books/{id}                판매 글 고치기 (POST 와 같은 본문, photos 에 남길 사진 id 를 섞어 보낸다) (판매자·관리자)
  *   PUT    /api/books/{id}/status         판매 상태 {status:"selling"|"reserved"|"sold"} (판매자·관리자)
+ *   PUT    /api/books/{id}/trade          거래 정보 {trade_places, trade_times, trade_wish} (판매자·관리자)
  *   DELETE /api/books/{id}                판매 글 삭제 (판매자·관리자)
  *   POST   /api/books/{id}/comments       문의 댓글 {body} (로그인)
  *   DELETE /api/book-comments/{id}        댓글 삭제 (작성자·관리자)
@@ -16,6 +19,7 @@
  * 받는 형식은 JPEG·PNG·WEBP 뿐이고, 내용의 첫 바이트(파일 서명)까지 확인한다.
  * 다른 회원에게 보이는 것은 표시 이름·학과뿐이다 (api_community.c 와 같은 원칙).
  * 판매 완료한 책은 30일 뒤 자동으로 지워진다 (cleanup.c).
+ * 거래 정보(원하는 장소 · 거래 가능한 시간 · 희망 거래 시간)는 화면이 버튼으로 골라 만든 글자를 그대로 저장한다.
  *
  * 관련 테이블:
  *   books          판매 글 (seller_id = 판매자)
@@ -34,6 +38,8 @@
 #define BOOK_PHOTO_MAX    5                 /* 한 권에 올릴 수 있는 사진 수 */
 #define BOOK_PHOTO_B64MAX (1400 * 1024)     /* 사진 한 장의 base64 길이 상한 (원본 약 1MB) */
 #define BOOK_PRICE_MAX    1000000           /* 가격 상한 (원) */
+#define BOOK_TRADE_MAX    600               /* 거래 장소·가능한 시간 글자 상한 (바이트, 한글 200자) */
+#define BOOK_WISH_MAX     300               /* 희망 거래 시간 글자 상한 (바이트, 한글 100자) */
 
 /* ------------------------------------------------------------ 도우미 */
 
@@ -109,6 +115,30 @@ static const char *photo_payload(const char *url, const char **mime)
     return NULL;
 }
 
+/* 거래 정보 세 칸을 읽어 다듬는다. 성공하면 1, 너무 길면 오류 응답을 쓰고 0.
+ * out[0] = 원하는 장소, out[1] = 거래 가능한 시간, out[2] = 희망 거래 시간 (호출한 쪽이 free) */
+static int read_trade(const Json *in, Response *res, char *out[3])
+{
+    static const char *keys[3] = { "trade_places", "trade_times", "trade_wish" };
+    static const size_t lim[3] = { BOOK_TRADE_MAX, BOOK_TRADE_MAX, BOOK_WISH_MAX };
+    int i;
+
+    for (i = 0; i < 3; i++) {
+        out[i] = str_dup(json_str(in, keys[i], ""));
+        if (!out[i]) {
+            res_error(res, 500, "oom", "메모리가 부족합니다.");
+            return 0;
+        }
+        str_trim(out[i]);
+        if (strlen(out[i]) > lim[i]) {
+            res_error(res, 400, "bad_trade", i < 2 ? "거래 장소·시간은 200자까지 쓸 수 있습니다."
+                                                   : "희망 거래 시간은 100자까지 쓸 수 있습니다.");
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* 판매자 id. 책이 없으면 -1. */
 static long long book_seller(unsigned bid)
 {
@@ -136,7 +166,7 @@ static int book_manage_ok(unsigned bid, const CurrentUser *u)
 
 /* 목록 행: id, title, author, course, 과목 학과 이름, price, condition, status, created_at,
  *          seller_id, 판매자 표시 이름, 판매자 학과, 대표 사진 id(0 = 없음), 사진 수, 댓글 수, 설명 앞부분, 학과 id,
- *          설명 전체 (학과별 추천에서 쓴다) */
+ *          설명 전체 (학과별 추천에서 쓴다), 원하는 장소, 거래 가능한 시간, 희망 거래 시간 */
 #define BOOK_SELECT \
     "SELECT b.id, b.title, b.author, b.course, IFNULL(d.name, ''), b.price, b.book_condition, b.status, " \
     "       DATE_FORMAT(b.created_at, '%%Y-%%m-%%d %%H:%%i'), b.seller_id, u.nickname, IFNULL(sd.name, ''), " \
@@ -144,7 +174,7 @@ static int book_manage_ok(unsigned bid, const CurrentUser *u)
     "       (SELECT COUNT(*) FROM book_photos p WHERE p.book_id = b.id), " \
     "       (SELECT COUNT(*) FROM book_comments c WHERE c.book_id = b.id), " \
     "       LEFT(REPLACE(REPLACE(b.description, '\\r', ''), '\\n', ' '), 100), IFNULL(b.department_id, 0), " \
-    "       b.description " \
+    "       b.description, b.trade_places, b.trade_times, b.trade_wish " \
     "FROM books b JOIN users u ON u.id = b.seller_id " \
     "LEFT JOIN departments d ON d.id = b.department_id " \
     "LEFT JOIN departments sd ON sd.id = u.department_id "
@@ -170,7 +200,10 @@ static void write_book_row(Buf *b, MYSQL_ROW row, const MlHit *hit)
     json_kv_int(b, "photo_count", atoll(row[13]));                 buf_putc(b, ',');
     json_kv_int(b, "comment_count", atoll(row[14]));               buf_putc(b, ',');
     json_kv_str(b, "excerpt", row[15]);                            buf_putc(b, ',');
-    json_kv_int(b, "department_id", atoll(row[16]));
+    json_kv_int(b, "department_id", atoll(row[16]));               buf_putc(b, ',');
+    json_kv_str(b, "trade_places", row[18]);                       buf_putc(b, ',');
+    json_kv_str(b, "trade_times", row[19]);                        buf_putc(b, ',');
+    json_kv_str(b, "trade_wish", row[20]);
     if (hit) {
         buf_putc(b, ',');
         json_kv_int(b, "score", hit->score);
@@ -309,17 +342,146 @@ static void handle_book_list(Request *req, Response *res)
 
 /* ------------------------------------------------------------ 판매 글 쓰기 */
 
+/* 판매 글 쓰기·고치기에서 받는 값 (book_input_read 가 채우고 book_input_free 가 푼다) */
+typedef struct {
+    char *title, *author, *course, *desc, *trade[3];
+    const char *cond;
+    long price;
+    unsigned dept_id;
+    int nphotos;                          /* 사진 수 (순서 = 저장할 순서, 0 번이 대표) */
+    unsigned keep[BOOK_PHOTO_MAX];        /* 0 이 아니면 이미 있는 사진 id (고치기에서만) */
+    const char *payload[BOOK_PHOTO_MAX];  /* keep 이 0 이면 새 사진의 base64 본문 */
+    const char *mime[BOOK_PHOTO_MAX];
+} BookInput;
+
+static void book_input_free(BookInput *bi)
+{
+    int i;
+
+    free(bi->title);
+    free(bi->author);
+    free(bi->course);
+    free(bi->desc);
+    for (i = 0; i < 3; i++)
+        free(bi->trade[i]);
+}
+
+/* 요청 본문 in 을 검사해 bi 에 담는다. 잘못된 값이면 오류 응답을 쓰고 0.
+ * allow_keep 이면 photos 배열에 숫자(이미 있는 사진 id)도 받는다 (고치기). */
+static int book_input_read(const Json *in, Response *res, BookInput *bi, int allow_keep)
+{
+    const Json *photos;
+    Buf sql;
+    int i;
+
+    memset(bi, 0, sizeof *bi);
+    bi->title  = str_dup(json_str(in, "title", ""));
+    bi->author = str_dup(json_str(in, "author", ""));
+    bi->course = str_dup(json_str(in, "course", ""));
+    bi->desc   = str_dup(json_str(in, "description", ""));
+    bi->price  = json_int(in, "price", -1);
+    bi->dept_id = (unsigned)json_int(in, "department_id", 0);
+    bi->cond = condition_code(json_str(in, "condition", "good"));
+    if (!bi->title || !bi->author || !bi->course || !bi->desc) {
+        res_error(res, 500, "oom", "메모리가 부족합니다.");
+        return 0;
+    }
+    str_trim(bi->title);
+    str_trim(bi->author);
+    str_trim(bi->course);
+    str_trim(bi->desc);
+
+    /* 길이는 바이트 기준 (한글 1글자 = 3바이트) */
+    if (strlen(bi->title) < 2 || strlen(bi->title) > 600) {
+        res_error(res, 400, "bad_title", "책 제목을 2~200자로 써 주세요.");
+        return 0;
+    }
+    if (strlen(bi->author) > 300 || strlen(bi->course) > 300) {
+        res_error(res, 400, "bad_field", "저자·과목명은 100자까지 쓸 수 있습니다.");
+        return 0;
+    }
+    if (strlen(bi->desc) > 6000) {
+        res_error(res, 400, "bad_description", "설명은 2000자까지 쓸 수 있습니다.");
+        return 0;
+    }
+    utf8_cut(bi->title, 600);
+    if (!read_trade(in, res, bi->trade))
+        return 0;
+    if (bi->price < 0 || bi->price > BOOK_PRICE_MAX) {
+        res_error(res, 400, "bad_price", "가격은 0~1,000,000원으로 정하세요.");
+        return 0;
+    }
+    if (!bi->cond) {
+        res_error(res, 400, "bad_condition", "책 상태는 new, good, fair, poor 중 하나입니다.");
+        return 0;
+    }
+    if (bi->dept_id) {
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT COUNT(*) FROM departments WHERE id = %u", bi->dept_id);
+        if (db_scalar(sql.data, 0) == 0)
+            bi->dept_id = 0;   /* 없는 학과면 지정하지 않은 것으로 */
+        buf_free(&sql);
+    }
+
+    photos = json_get(in, "photos");
+    if (photos && photos->type == JS_ARR) {
+        if (photos->n > BOOK_PHOTO_MAX) {
+            res_error(res, 400, "too_many_photos", "사진은 5장까지 올릴 수 있습니다.");
+            return 0;
+        }
+        for (i = 0; i < photos->n; i++) {
+            const Json *p = photos->items[i];
+            if (allow_keep && p && p->type == JS_NUM && p->num >= 1 && p->num <= 0xFFFFFFFFu) {
+                bi->keep[bi->nphotos++] = (unsigned)p->num;   /* 이 글의 사진인지는 저장할 때 확인 */
+                continue;
+            }
+            bi->payload[bi->nphotos] = photo_payload(p && p->type == JS_STR ? p->str : NULL, &bi->mime[bi->nphotos]);
+            if (!bi->payload[bi->nphotos]) {
+                res_error(res, 400, "bad_photo", "사진은 JPG·PNG·WEBP 형식, 한 장에 1MB 까지 올릴 수 있습니다.");
+                return 0;
+            }
+            bi->nphotos++;
+        }
+    }
+    return 1;
+}
+
+/* bi 의 사진들을 책 bid 에 순서대로 저장한다 (트랜잭션 안에서 부른다).
+ * 이미 있는 사진(keep)은 순서만 바꾸고, 목록에 없는 기존 사진은 지운다. 실패하면 0. */
+static int book_save_photos(Buf *sql, unsigned bid, const BookInput *bi)
+{
+    int i;
+
+    buf_reset(sql);
+    db_sqlf(sql, "DELETE FROM book_photos WHERE book_id = %u", bid);
+    for (i = 0; i < bi->nphotos; i++)
+        if (bi->keep[i])
+            db_sqlf(sql, " AND id <> %u", bi->keep[i]);
+    if (!db_exec_buf(sql))
+        return 0;
+
+    for (i = 0; i < bi->nphotos; i++) {
+        buf_reset(sql);
+        if (bi->keep[i])
+            db_sqlf(sql, "UPDATE book_photos SET sort_order = %d WHERE id = %u AND book_id = %u",
+                    i, bi->keep[i], bid);   /* 다른 글의 사진 id 면 아무 일도 없다 */
+        else
+            db_sqlf(sql, "INSERT INTO book_photos (book_id, sort_order, mime, data) VALUES (%u, %d, '%s', FROM_BASE64(%Q))",
+                    bid, i, bi->mime[i], bi->payload[i]);
+        if (!db_exec_buf(sql)) {
+            log_err("책 사진 저장 실패: %s", db_error());
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* POST /api/books - 글과 사진을 한 트랜잭션으로 저장한다 (사진 하나라도 실패하면 글도 남기지 않는다) */
 static void handle_book_create(Request *req, Response *res)
 {
     CurrentUser u;
     Json *in;
-    const Json *photos;
-    char *title = NULL, *author = NULL, *course = NULL, *desc = NULL;
-    const char *cond, *payload[BOOK_PHOTO_MAX], *mime[BOOK_PHOTO_MAX];
-    long price;
-    unsigned dept_id;
-    int i, nphotos = 0;
+    BookInput bi;
     Buf sql;
     unsigned long long bid;
 
@@ -328,82 +490,23 @@ static void handle_book_create(Request *req, Response *res)
     in = body_object(req, res);
     if (!in)
         return;
-
-    title  = str_dup(json_str(in, "title", ""));
-    author = str_dup(json_str(in, "author", ""));
-    course = str_dup(json_str(in, "course", ""));
-    desc   = str_dup(json_str(in, "description", ""));
-    price  = json_int(in, "price", -1);
-    dept_id = (unsigned)json_int(in, "department_id", 0);
-    cond = condition_code(json_str(in, "condition", "good"));
-    if (!title || !author || !course || !desc) {
-        res_error(res, 500, "oom", "메모리가 부족합니다.");
+    if (!book_input_read(in, res, &bi, 0))
         goto out;
-    }
-    str_trim(title);
-    str_trim(author);
-    str_trim(course);
-    str_trim(desc);
-
-    /* 길이는 바이트 기준 (한글 1글자 = 3바이트) */
-    if (strlen(title) < 2 || strlen(title) > 600) {
-        res_error(res, 400, "bad_title", "책 제목을 2~200자로 써 주세요.");
-        goto out;
-    }
-    if (strlen(author) > 300 || strlen(course) > 300) {
-        res_error(res, 400, "bad_field", "저자·과목명은 100자까지 쓸 수 있습니다.");
-        goto out;
-    }
-    if (strlen(desc) > 6000) {
-        res_error(res, 400, "bad_description", "설명은 2000자까지 쓸 수 있습니다.");
-        goto out;
-    }
-    utf8_cut(title, 600);
-    if (price < 0 || price > BOOK_PRICE_MAX) {
-        res_error(res, 400, "bad_price", "가격은 0~1,000,000원으로 정하세요.");
-        goto out;
-    }
-    if (!cond) {
-        res_error(res, 400, "bad_condition", "책 상태는 new, good, fair, poor 중 하나입니다.");
-        goto out;
-    }
-    if (dept_id) {
-        buf_init(&sql);
-        db_sqlf(&sql, "SELECT COUNT(*) FROM departments WHERE id = %u", dept_id);
-        if (db_scalar(sql.data, 0) == 0)
-            dept_id = 0;   /* 없는 학과면 지정하지 않은 것으로 */
-        buf_free(&sql);
-    }
-
-    photos = json_get(in, "photos");
-    if (photos && photos->type == JS_ARR) {
-        if (photos->n > BOOK_PHOTO_MAX) {
-            res_error(res, 400, "too_many_photos", "사진은 5장까지 올릴 수 있습니다.");
-            goto out;
-        }
-        for (i = 0; i < photos->n; i++) {
-            const Json *p = photos->items[i];
-            payload[nphotos] = photo_payload(p && p->type == JS_STR ? p->str : NULL, &mime[nphotos]);
-            if (!payload[nphotos]) {
-                res_error(res, 400, "bad_photo", "사진은 JPG·PNG·WEBP 형식, 한 장에 1MB 까지 올릴 수 있습니다.");
-                goto out;
-            }
-            nphotos++;
-        }
-    }
 
     if (!db_begin()) {
         res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
         goto out;
     }
     buf_init(&sql);
-    db_sqlf(&sql, "INSERT INTO books (seller_id, title, author, course, department_id, price, book_condition, description) "
-                  "VALUES (%u, %Q, %Q, %Q, ", u.id, title, author, course);
-    if (dept_id)
-        db_sqlf(&sql, "%u, ", dept_id);
+    db_sqlf(&sql, "INSERT INTO books (seller_id, title, author, course, department_id, price, book_condition, description, "
+                  "trade_places, trade_times, trade_wish) "
+                  "VALUES (%u, %Q, %Q, %Q, ", u.id, bi.title, bi.author, bi.course);
+    if (bi.dept_id)
+        db_sqlf(&sql, "%u, ", bi.dept_id);
     else
         buf_puts(&sql, "NULL, ");
-    db_sqlf(&sql, "%L, '%s', %Q)", (long long)price, cond, desc);
+    db_sqlf(&sql, "%L, '%s', %Q, %Q, %Q, %Q)", (long long)bi.price, bi.cond, bi.desc,
+            bi.trade[0], bi.trade[1], bi.trade[2]);
     if (!db_exec_buf(&sql)) {
         buf_free(&sql);
         db_rollback();
@@ -412,17 +515,11 @@ static void handle_book_create(Request *req, Response *res)
     }
     bid = db_last_id();
 
-    for (i = 0; i < nphotos; i++) {
-        buf_reset(&sql);
-        db_sqlf(&sql, "INSERT INTO book_photos (book_id, sort_order, mime, data) VALUES (%u, %d, '%s', FROM_BASE64(%Q))",
-                (unsigned)bid, i, mime[i], payload[i]);
-        if (!db_exec_buf(&sql)) {
-            log_err("책 사진 저장 실패: %s", db_error());
-            buf_free(&sql);
-            db_rollback();
-            res_error(res, 500, "db_error", "사진을 저장할 수 없습니다.");
-            goto out;
-        }
+    if (!book_save_photos(&sql, (unsigned)bid, &bi)) {
+        buf_free(&sql);
+        db_rollback();
+        res_error(res, 500, "db_error", "사진을 저장할 수 없습니다.");
+        goto out;
     }
     buf_free(&sql);
     if (!db_commit()) {
@@ -442,10 +539,63 @@ static void handle_book_create(Request *req, Response *res)
     }
 
 out:
-    free(title);
-    free(author);
-    free(course);
-    free(desc);
+    book_input_free(&bi);
+    json_free(in);
+}
+
+/* PUT /api/books/{id} - 판매 글 고치기 (판매자·관리자). 본문은 POST 와 같고,
+ * photos 에는 남길 기존 사진 id(숫자)와 새 사진(data URL)을 원하는 순서대로 섞어 보낸다.
+ * 판매 상태·판매자·등록 시각은 바뀌지 않는다. */
+static void handle_book_update(Request *req, Response *res, unsigned bid)
+{
+    CurrentUser u;
+    Json *in;
+    BookInput bi;
+    Buf sql;
+    int ok;
+
+    if (!auth_require(req, res, &u))
+        return;
+    ok = book_manage_ok(bid, &u);
+    if (ok < 0) { res_error(res, 404, "not_found", "판매 글이 없습니다."); return; }
+    if (!ok)    { res_error(res, 403, "not_allowed", "판매자만 고칠 수 있습니다."); return; }
+
+    in = body_object(req, res);
+    if (!in)
+        return;
+    if (!book_input_read(in, res, &bi, 1))
+        goto out;
+
+    if (!db_begin()) {
+        res_error(res, 500, "db_error", "트랜잭션을 시작할 수 없습니다.");
+        goto out;
+    }
+    buf_init(&sql);
+    db_sqlf(&sql, "UPDATE books SET title = %Q, author = %Q, course = %Q, department_id = ",
+            bi.title, bi.author, bi.course);
+    if (bi.dept_id)
+        db_sqlf(&sql, "%u", bi.dept_id);
+    else
+        buf_puts(&sql, "NULL");
+    db_sqlf(&sql, ", price = %L, book_condition = '%s', description = %Q, "
+                  "trade_places = %Q, trade_times = %Q, trade_wish = %Q WHERE id = %u",
+            (long long)bi.price, bi.cond, bi.desc, bi.trade[0], bi.trade[1], bi.trade[2], bid);
+    if (!db_exec_buf(&sql) || !book_save_photos(&sql, bid, &bi)) {
+        buf_free(&sql);
+        db_rollback();
+        res_error(res, 500, "db_error", "판매 글을 고칠 수 없습니다.");
+        goto out;
+    }
+    buf_free(&sql);
+    if (!db_commit()) {
+        db_rollback();
+        res_error(res, 500, "db_error", "판매 글을 고칠 수 없습니다.");
+        goto out;
+    }
+    res_json(res, 200, "{\"ok\":true}");
+
+out:
+    book_input_free(&bi);
     json_free(in);
 }
 
@@ -570,6 +720,40 @@ static void handle_book_status(Request *req, Response *res, unsigned bid)
     }
     buf_free(&sql);
     res_json(res, 200, "{\"ok\":true}");
+}
+
+/* PUT /api/books/{id}/trade {trade_places, trade_times, trade_wish} (판매자·관리자)
+ * 글을 올린 뒤에도 거래 장소·시간을 바꿀 수 있다. 빈 칸은 "정하지 않음". */
+static void handle_book_trade(Request *req, Response *res, unsigned bid)
+{
+    CurrentUser u;
+    Json *in;
+    char *trade[3] = { NULL, NULL, NULL };
+    Buf sql;
+    int ok, i;
+
+    if (!auth_require(req, res, &u))
+        return;
+    ok = book_manage_ok(bid, &u);
+    if (ok < 0) { res_error(res, 404, "not_found", "판매 글이 없습니다."); return; }
+    if (!ok)    { res_error(res, 403, "not_allowed", "판매자만 바꿀 수 있습니다."); return; }
+
+    in = body_object(req, res);
+    if (!in)
+        return;
+    if (read_trade(in, res, trade)) {
+        buf_init(&sql);
+        db_sqlf(&sql, "UPDATE books SET trade_places = %Q, trade_times = %Q, trade_wish = %Q WHERE id = %u",
+                trade[0], trade[1], trade[2], bid);
+        if (db_exec_buf(&sql))
+            res_json(res, 200, "{\"ok\":true}");
+        else
+            res_error(res, 500, "db_error", "거래 정보를 바꿀 수 없습니다.");
+        buf_free(&sql);
+    }
+    for (i = 0; i < 3; i++)
+        free(trade[i]);
+    json_free(in);
 }
 
 /* DELETE /api/books/{id} (판매자·관리자). 사진·댓글은 CASCADE 로 함께 지워진다. */
@@ -721,12 +905,20 @@ int route_books(Request *req, Response *res)
         handle_book_status(req, res, id);
         return 1;
     }
+    if (!strcmp(m, "PUT") && path_id(req->path, "/api/books/", "/trade", &id)) {
+        handle_book_trade(req, res, id);
+        return 1;
+    }
     if (!strcmp(m, "POST") && path_id(req->path, "/api/books/", "/comments", &id)) {
         handle_book_comment(req, res, id);
         return 1;
     }
     if (!strcmp(m, "GET") && path_id(req->path, "/api/books/", NULL, &id)) {
         handle_book_detail(req, res, id);
+        return 1;
+    }
+    if (!strcmp(m, "PUT") && path_id(req->path, "/api/books/", NULL, &id)) {
+        handle_book_update(req, res, id);
         return 1;
     }
     if (!strcmp(m, "DELETE") && path_id(req->path, "/api/books/", NULL, &id)) {

@@ -1328,6 +1328,50 @@ button.danger { color: var(--danger); }
 .role-pick input:checked + span { background: var(--brand); color: #fff; }
 .role-pick input:focus-visible + span { outline: 2px solid var(--brand-ring); outline-offset: 1px; }
 
+/* 여러 개 고르는 칸 버튼 (전공책 거래 장소·요일·시간대) */
+.pick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pick-chips label { position: relative; flex-direction: row; cursor: pointer; }
+.pick-chips input { position: absolute; opacity: 0; pointer-events: none; }
+.pick-chips span {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.pick-chips span small { font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.pick-chips label:hover span { background: var(--surface-2); }
+.pick-chips input:checked + span { border-color: var(--brand); background: var(--brand); color: #fff; }
+.pick-chips input:checked + span small { color: rgba(255, 255, 255, .85); }
+.pick-chips input:focus-visible + span { outline: 2px solid var(--brand-ring); outline-offset: 1px; }
+
+/* 전공책 거래 정보 */
+.trade-fields { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px 14px; }
+.trade-fields legend { padding: 0 6px; font-weight: 700; font-size: 14px; }
+.trade-fields legend small { font-weight: 500; color: var(--muted); }
+.trade-field { display: flex; flex-direction: column; gap: 8px; }
+.trade-field .field-label { margin-bottom: 0; }
+.wish-pick { gap: 8px; flex-wrap: wrap; }
+.wish-pick select, .wish-pick input { width: auto; min-width: 130px; }
+.trade-box {
+  display: flex; flex-direction: column; gap: 10px;
+  margin: 16px 0 0; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2);
+}
+.trade-box h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.trade-row { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.trade-key { flex: 0 0 110px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.trade-row .chips { flex: 1; gap: 6px; }
+.trade-ask {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border: 1px dashed var(--brand); border-radius: 10px; background: var(--surface);
+}
+.trade-ask > button { align-self: flex-start; }
+.book-trade { margin: 2px 0 0; font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 .study-members { display: flex; flex-direction: column; gap: 18px; }
 .study-group-title { margin: 0 0 8px; font-size: 13px; font-weight: 700; color: var(--text-2); }
 .study-member {

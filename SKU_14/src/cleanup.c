@@ -133,6 +133,19 @@ void cleanup_ensure_schema(void)
                  ") ENGINE=InnoDB"))
         log_warn("전공책 장터 표를 만들지 못했습니다. sql/16_books.sql 을 적용하세요.");
 
+    /* books.trade_*: 거래 장소·가능한 시간·희망 거래 시간 (sql/22_book_trade.sql 과 같은 내용) */
+    if (db_scalar("SELECT COUNT(*) FROM information_schema.columns "
+                  "WHERE table_schema = DATABASE() AND table_name = 'books' "
+                  "AND column_name = 'trade_places'", 1) == 0) {
+        if (db_exec("ALTER TABLE books "
+                    "ADD COLUMN trade_places VARCHAR(200) NOT NULL DEFAULT '' AFTER description, "
+                    "ADD COLUMN trade_times VARCHAR(200) NOT NULL DEFAULT '' AFTER trade_places, "
+                    "ADD COLUMN trade_wish VARCHAR(100) NOT NULL DEFAULT '' AFTER trade_times"))
+            log_info("books 에 거래 정보(trade_places, trade_times, trade_wish) 열을 추가했습니다.");
+        else
+            log_warn("books 에 거래 정보 열을 추가하지 못했습니다. sql/22_book_trade.sql 을 적용하세요.");
+    }
+
     /* 참여 권유 기록 (sql/17_invitations.sql 과 같은 내용) */
     if (!db_exec("CREATE TABLE IF NOT EXISTS invitations ("
                  "  id INT UNSIGNED NOT NULL AUTO_INCREMENT,"
