@@ -3036,7 +3036,7 @@ async function viewAdminContent() {
 
 const NOTI_KIND = { invite: '참여 권유', invite_accepted: '권유 수락', team: '팀 합류', admin: '관리자 알림', suspend: '계정 정지', unsuspend: '정지 해제', book_chat: '전공책 채팅',
                     study_request: '스터디 참여 신청', study_accept: '스터디 수락', study_reject: '스터디 신청 결과',
-                    study_confirmed: '스터디 확정' };
+                    study_confirmed: '스터디 확정', team_removed: '팀에서 제외' };
 /* 누르면 바로 그 화면(link)으로 가는 알림. 나머지(관리자·정지 알림)는 자세히 보기 화면으로 */
 const NOTI_GO_LINK = new Set(['invite', 'invite_accepted', 'team']);
 /* 참여 권유 알림의 상태(서버 invite_state)별 버튼 글자. open 만 누를 수 있다 */

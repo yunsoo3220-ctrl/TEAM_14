@@ -1067,6 +1067,14 @@ static void handle_study_remove(Request *req, Response *res, unsigned gid, unsig
         res_error(res, 404, "not_member", "이 스터디의 멤버가 아닙니다.");
         return;
     }
+    /* 방장(·관리자)이 내보낸 경우에만 그 회원에게 알린다 (스스로 나간 경우는 알리지 않는다) */
+    if (uid != u.id) {
+        char name[304], title[400], link[32];
+        study_name(gid, name, sizeof name);
+        snprintf(title, sizeof title, "「%s」 스터디에서 제외되었습니다", name);
+        snprintf(link, sizeof link, "#/studies/%u", gid);
+        notify_add(uid, u.id, "team_removed", title, "방장이 스터디에서 내보냈습니다. 스터디 채팅방에도 더는 들어갈 수 없습니다.", link);
+    }
     res_json(res, 200, "{\"ok\":true}");
 }
 

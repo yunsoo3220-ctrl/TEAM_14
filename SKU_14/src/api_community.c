@@ -1313,6 +1313,23 @@ static void handle_team_remove(Request *req, Response *res, unsigned rid, unsign
         res_error(res, 404, "not_member", "이 팀의 팀원이 아닙니다.");
         return;
     }
+    /* 글쓴이(·관리자)가 내보낸 경우에만 그 회원에게 알린다 (스스로 나간 경우는 알리지 않는다) */
+    if (uid != u.id) {
+        MYSQL_RES *qr;
+        MYSQL_ROW row;
+        char title[400], link[32];
+
+        buf_init(&sql);
+        db_sqlf(&sql, "SELECT title FROM recruits WHERE id = %u", rid);
+        qr = db_query_buf(&sql);
+        buf_free(&sql);
+        row = qr ? mysql_fetch_row(qr) : NULL;
+        snprintf(title, sizeof title, "「%s」 모집글 팀에서 제외되었습니다", row ? row[0] : "");
+        if (qr)
+            mysql_free_result(qr);
+        snprintf(link, sizeof link, "#/recruits/%u", rid);
+        notify_add(uid, u.id, "team_removed", title, "글쓴이가 팀에서 내보냈습니다. 팀 채팅방에도 더는 들어갈 수 없습니다.", link);
+    }
     res_json(res, 200, "{\"ok\":true}");
 }
 
